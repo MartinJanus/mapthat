@@ -1,0 +1,133 @@
+import { createServer } from "node:http";
+import { once } from "node:events";
+import ky from "ky";
+import { describe, expect, it } from "vitest";
+import {
+  instagramIdSchema,
+  webhookConfigSchema,
+} from "../../src/features/instagram/config";
+import {
+  createInstagramSender,
+  FIXED_REPLY,
+} from "../../src/features/instagram/client";
+
+const config = webhookConfigSchema.parse({
+  INSTAGRAM_APP_SECRET: "synthetic-app-secret",
+  INSTAGRAM_ACCESS_TOKEN: "synthetic-access-token",
+  INSTAGRAM_ACCOUNT_ID: "10001",
+});
+const recipient = instagramIdSchema.parse("20002");
+
+type ObservedRequest = {
+  readonly method: string | undefined;
+  readonly path: string | undefined;
+  readonly authorization: string | undefined;
+  readonly body: unknown;
+};
+
+async function withApi(
+  response: { readonly status: number; readonly body: string },
+  run: (
+    sender: ReturnType<typeof createInstagramSender>,
+    requests: ObservedRequest[],
+  ) => Promise<void>,
+) {
+  const requests: ObservedRequest[] = [];
+  const server = createServer(async (request, reply) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    requests.push({
+      method: request.method,
+      path: request.url,
+      authorization: request.headers.authorization,
+      body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+    });
+    reply.writeHead(response.status, { "Content-Type": "application/json" });
+    reply.end(response.body);
+  });
+  const listening = once(server, "listening");
+  server.listen(0, "127.0.0.1");
+  await listening;
+  const address = server.address();
+  if (!address || typeof address === "string")
+    throw new TypeError("Expected TCP address");
+  const origin = `http://127.0.0.1:${address.port}`;
+  const http = ky.create({
+    fetch: async (input, init) => {
+      const original = new Request(input, init);
+      const url = new URL(original.url);
+      expect(url.origin).toBe("https://graph.instagram.com");
+      return fetch(new Request(`${origin}${url.pathname}`, original));
+    },
+  });
+  try {
+    await run(createInstagramSender(config, http), requests);
+  } finally {
+    const closed = once(server, "close");
+    server.close();
+    server.closeAllConnections();
+    await closed;
+  }
+}
+
+describe("Instagram official API adapter", () => {
+  it("sends a fixed reply with a private bearer token when a valid recipient is supplied", async () => {
+    await withApi(
+      {
+        status: 200,
+        body: '{"recipient_id":"20002","message_id":"synthetic-reply-id"}',
+      },
+      async (send, requests) => {
+        const result = await send(recipient);
+        expect(result).toEqual({ kind: "sent" });
+        expect(requests).toEqual([
+          {
+            method: "POST",
+            path: "/v25.0/10001/messages",
+            authorization: "Bearer synthetic-access-token",
+            body: {
+              recipient: { id: "20002" },
+              message: { text: FIXED_REPLY },
+            },
+          },
+        ]);
+      },
+    );
+  });
+
+  it.each([400, 401, 429, 500])(
+    "reports HTTP %s without retrying a send",
+    async (status) => {
+      await withApi(
+        { status, body: '{"error":{"message":"synthetic-provider-error"}}' },
+        async (send, requests) => {
+          const result = await send(recipient);
+          expect(result).toEqual({ kind: "failed", reason: "http" });
+          expect(requests).toHaveLength(1);
+        },
+      );
+    },
+  );
+
+  it.each(["not JSON", "{}", '{"recipient_id":"99999","message_id":"reply"}'])(
+    "reports malformed successful responses %s",
+    async (body) => {
+      await withApi({ status: 200, body }, async (send, requests) => {
+        const result = await send(recipient);
+        expect(result).toEqual({ kind: "failed", reason: "response" });
+        expect(requests).toHaveLength(1);
+      });
+    },
+  );
+
+  it("returns a sanitized result when the transport fails", async () => {
+    const http = ky.create({
+      fetch: async () => {
+        throw new TypeError("synthetic network failure with private details");
+      },
+    });
+    const send = createInstagramSender(config, http);
+    const result = await send(recipient);
+    expect(result).toEqual({ kind: "failed", reason: "transport" });
+  });
+});
