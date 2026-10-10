@@ -1,5 +1,5 @@
-import ky, { NetworkError, TimeoutError, ResponseSizeError } from "ky";
-import type { KyInstance } from "ky";
+import axios, { AxiosError } from "axios";
+import type { AxiosInstance } from "axios";
 import { z } from "zod";
 import { instagramIdSchema } from "./config";
 import type { InstagramId, WebhookConfig } from "./config";
@@ -21,43 +21,50 @@ const replySchema = z.object({
 
 export function createInstagramSender(
   config: WebhookConfig,
-  http: KyInstance = ky,
+  http: AxiosInstance = axios,
 ) {
   return async (recipient: InstagramId): Promise<SendResult> => {
     try {
-      const response = await http.post(
+      const response = await http.post<unknown>(
         `https://graph.instagram.com/${config.INSTAGRAM_API_VERSION}/${config.INSTAGRAM_ACCOUNT_ID}/messages`,
         {
+          recipient: { id: recipient },
+          message: { text: FIXED_REPLY },
+        },
+        {
           headers: { Authorization: `Bearer ${config.INSTAGRAM_ACCESS_TOKEN}` },
-          json: {
-            recipient: { id: recipient },
-            message: { text: FIXED_REPLY },
-          },
+          adapter: "http",
           timeout: 5000,
-          retry: 0,
-          redirect: "error",
-          throwHttpErrors: false,
-          maxResponseSize: 64 * 1024,
+          signal: AbortSignal.timeout(5000),
+          maxRedirects: 0,
+          validateStatus: () => true,
+          maxContentLength: 64 * 1024,
+          responseType: "text",
         },
       );
-      if (!response.ok) {
-        await response.body?.cancel();
+      if (response.status < 200 || response.status >= 300) {
         return { kind: "failed", reason: "http" };
       }
-      const parsed = replySchema.safeParse(await response.json<unknown>());
+      if (typeof response.data !== "string") {
+        return { kind: "failed", reason: "response" };
+      }
+      const body: unknown = JSON.parse(response.data);
+      const parsed = replySchema.safeParse(body);
       return parsed.success && parsed.data.recipient_id === recipient
         ? { kind: "sent" }
         : { kind: "failed", reason: "response" };
     } catch (error) {
-      if (error instanceof SyntaxError || error instanceof ResponseSizeError) {
+      if (error instanceof SyntaxError) {
         return { kind: "failed", reason: "response" };
       }
-      if (
-        error instanceof NetworkError ||
-        error instanceof TimeoutError ||
-        error instanceof TypeError
-      ) {
-        return { kind: "failed", reason: "transport" };
+      if (axios.isAxiosError(error)) {
+        return {
+          kind: "failed",
+          reason:
+            error.code === AxiosError.ERR_BAD_RESPONSE
+              ? "response"
+              : "transport",
+        };
       }
       throw error;
     }

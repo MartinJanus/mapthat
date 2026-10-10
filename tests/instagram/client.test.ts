@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { once } from "node:events";
-import ky from "ky";
+import axios from "axios";
 import { describe, expect, it } from "vitest";
 import {
   instagramIdSchema,
@@ -26,7 +26,11 @@ type ObservedRequest = {
 };
 
 async function withApi(
-  response: { readonly status: number; readonly body: string },
+  response: {
+    readonly status: number;
+    readonly body: string;
+    readonly location?: string;
+  },
   run: (
     sender: ReturnType<typeof createInstagramSender>,
     requests: ObservedRequest[],
@@ -42,7 +46,10 @@ async function withApi(
       authorization: request.headers.authorization,
       body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
     });
-    reply.writeHead(response.status, { "Content-Type": "application/json" });
+    reply.writeHead(response.status, {
+      "Content-Type": "application/json",
+      ...(response.location ? { Location: response.location } : {}),
+    });
     reply.end(response.body);
   });
   const listening = once(server, "listening");
@@ -52,13 +59,13 @@ async function withApi(
   if (!address || typeof address === "string")
     throw new TypeError("Expected TCP address");
   const origin = `http://127.0.0.1:${address.port}`;
-  const http = ky.create({
-    fetch: async (input, init) => {
-      const original = new Request(input, init);
-      const url = new URL(original.url);
-      expect(url.origin).toBe("https://graph.instagram.com");
-      return fetch(new Request(`${origin}${url.pathname}`, original));
-    },
+  const http = axios.create({ proxy: false });
+  http.interceptors.request.use((request) => {
+    if (!request.url) throw new TypeError("Expected API URL");
+    const url = new URL(request.url);
+    expect(url.origin).toBe("https://graph.instagram.com");
+    request.url = `${origin}${url.pathname}`;
+    return request;
   });
   try {
     await run(createInstagramSender(config, http), requests);
@@ -121,13 +128,39 @@ describe("Instagram official API adapter", () => {
   );
 
   it("returns a sanitized result when the transport fails", async () => {
-    const http = ky.create({
-      fetch: async () => {
-        throw new TypeError("synthetic network failure with private details");
-      },
+    const http = axios.create();
+    http.interceptors.request.use((request) => {
+      request.signal = AbortSignal.abort();
+      return request;
     });
     const send = createInstagramSender(config, http);
     const result = await send(recipient);
     expect(result).toEqual({ kind: "failed", reason: "transport" });
+  });
+
+  it("does not follow redirects when the API redirects a send", async () => {
+    await withApi(
+      { status: 302, body: "", location: "/redirect" },
+      async (send, requests) => {
+        expect(await send(recipient)).toEqual({
+          kind: "failed",
+          reason: "http",
+        });
+        expect(requests).toHaveLength(1);
+      },
+    );
+  });
+
+  it("rejects successful responses larger than the response limit", async () => {
+    await withApi(
+      { status: 200, body: "x".repeat(65 * 1024) },
+      async (send, requests) => {
+        expect(await send(recipient)).toEqual({
+          kind: "failed",
+          reason: "response",
+        });
+        expect(requests).toHaveLength(1);
+      },
+    );
   });
 });
