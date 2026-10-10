@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GET } from "./route";
+import { GET } from "../../src/app/api/health/route";
 
 describe("GET /api/health", () => {
   it("returns a non-cacheable JSON health response when called", async () => {

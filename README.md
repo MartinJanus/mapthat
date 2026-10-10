@@ -33,12 +33,14 @@ Open [http://localhost:3000](http://localhost:3000) in your browser. Edit the
 homepage in `src/app/page.tsx`; the development server updates it automatically.
 To use another port, run `npm run dev -- --port 3001`.
 
-No environment variables or Meta, Google, or AI credentials are required.
-`.env.example` intentionally contains only comments. Copying it to `.env.local`
-is optional. When a feature introduces configuration, document placeholder
-values in `.env.example` and validate them when that feature needs them. Keep
-real credentials in ignored local environment files; never commit them or expose
-them through public responses.
+The homepage, health endpoint, and ordinary checks need no credentials. The
+Instagram webhook requires server-side configuration listed in `.env.example`.
+Populate those values privately in ignored `.env.local` (or `.env`); never commit
+credentials or expose them through public responses. Configuration is validated
+only when the webhook is called, so builds and tests need no live Meta account.
+
+See [the Instagram connectivity experiment](docs/instagram-connectivity.md) for
+Meta setup, HTTPS callback verification, limitations, and the real-account test.
 
 ## Commands
 
@@ -77,7 +79,7 @@ liveness check, with no secrets or internal configuration. It does not check
 external providers. Unsupported methods such as `POST` return HTTP **405**.
 Stop the server with Ctrl+C.
 
-The Vitest test in `src/app/api/health/route.test.ts` calls the real route handler
+The Vitest test in `tests/api/health.test.ts` calls the real route handler
 and verifies its HTTP response status, headers, and exact JSON body. It needs no
 running server, paid services, or live credentials. The curl check additionally
 verifies routing through a running Next.js server.
@@ -87,7 +89,10 @@ verifies routing through a running Next.js server.
 - `src/app/page.tsx`: minimal homepage.
 - `src/app/layout.tsx` and `src/app/globals.css`: shared layout and global styles.
 - `src/app/api/health/route.ts`: health HTTP handler.
-- `src/**/*.test.ts`: tests discovered by Vitest.
+- `src/app/api/instagram/webhook/route.ts`: signed Instagram webhook entry point.
+- `src/features/instagram/`: configuration, event processing, and API adapter.
+- `tests/api/`: HTTP entry-point tests discovered by Vitest.
+- `tests/instagram/`: event-processing, authentication, and API-adapter tests.
 
 As product behavior appears, put reusable application logic in feature modules
 outside page components and HTTP handlers. Those entry points should call that
@@ -95,8 +100,8 @@ logic so the Instagram bot, discovery pages, and extraction API can reuse it.
 Introduce modules when there is behavior to own rather than creating empty
 service layers now.
 
-Provider integrations, databases, background jobs, production deployment,
-discovery rankings, and paid API access are outside this foundation issue.
+The Instagram integration is a fixed-reply experiment. Extraction, databases,
+background jobs, production deployment, and discovery rankings remain outside it.
 
 ## Project workflow and scope
 
