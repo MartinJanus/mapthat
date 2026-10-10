@@ -23,7 +23,6 @@ From a fresh checkout:
 ```bash
 git clone https://github.com/MartinJanus/mapthat.git
 cd mapthat
-git switch repo-foundation
 nvm install
 nvm use
 npm ci
@@ -98,3 +97,10 @@ service layers now.
 
 Provider integrations, databases, background jobs, production deployment,
 discovery rankings, and paid API access are outside this foundation issue.
+
+## Project workflow and scope
+
+- [Prototype scope and feasibility questions](docs/scope.md)
+- [Contribution workflow, action pinning, and secrets](CONTRIBUTING.md)
+- [Architecture-decision template](docs/decisions/template.md)
+- [CI verification record](docs/ci-verification.md)
