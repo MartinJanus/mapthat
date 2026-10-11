@@ -8,6 +8,7 @@ import {
 } from "../../src/features/instagram/config";
 import {
   createInstagramSender,
+  createInstagramTextSender,
   FIXED_REPLY,
 } from "../../src/features/instagram/client";
 
@@ -162,5 +163,13 @@ describe("Instagram official API adapter", () => {
         expect(requests).toHaveLength(1);
       },
     );
+  });
+
+  it("does not send text that exceeds Instagram's byte limit", async () => {
+    const send = createInstagramTextSender(config);
+
+    const result = await send(recipient, "x".repeat(1001));
+
+    expect(result).toEqual({ kind: "failed", reason: "response" });
   });
 });

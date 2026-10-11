@@ -1,8 +1,11 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { verifyConfigSchema, webhookConfigSchema } from "./config";
-import { createInstagramSender } from "./client";
+import { createInstagramSender, createInstagramTextSender } from "./client";
 import { createMessageProcessor, envelopeSchema } from "./messages";
 import { createReelCapture } from "./reel-capture";
+import { createReelMessageProcessor } from "./reel-messages";
+import { geminiConfigSchema } from "../places/config";
+import { createGeminiCaptionExtractor } from "../places/gemini";
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const responseHeaders = { "Cache-Control": "no-store" } as const;
@@ -23,6 +26,12 @@ export function createWebhookHandlers(options: {
   const processMessages = options.processMessages ?? createMessageProcessor();
   const sender = options.sender ?? createInstagramSender;
   const captureReel = options.captureReel ?? createReelCapture();
+  const processReels = createReelMessageProcessor({
+    extract: (caption) =>
+      createGeminiCaptionExtractor(
+        geminiConfigSchema.parse(options.environment()),
+      )(caption),
+  });
   const log = options.log ?? ((record) => console.info(JSON.stringify(record)));
   const reply = (body: string, status: number) =>
     new Response(body, {
@@ -89,6 +98,21 @@ export function createWebhookHandlers(options: {
       } catch (error) {
         if (!(error instanceof Error)) throw error;
         log({ event: "instagram.reel_capture_failed", level: "error" });
+      }
+      try {
+        const reelSummary = await processReels(
+          envelope.data,
+          config.data.INSTAGRAM_ACCOUNT_ID,
+          createInstagramTextSender(config.data),
+        );
+        log({
+          event: "instagram.reels_processed",
+          level: reelSummary.failed ? "error" : "info",
+          ...reelSummary,
+        });
+      } catch (error) {
+        if (!(error instanceof Error)) throw error;
+        log({ event: "instagram.reel_processing_failed", level: "error" });
       }
       const summary = await processMessages(
         envelope.data,

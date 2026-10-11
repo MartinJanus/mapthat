@@ -43,6 +43,8 @@ See [the Instagram connectivity experiment](docs/instagram-connectivity.md) for
 Meta setup, HTTPS callback verification, limitations, and the real-account test.
 See [the shared-Reel capture guide](docs/instagram-reel-capture.md)
 to inspect the raw webhook JSON from any Reel share.
+Caption interpretation uses Gemini only when the extraction flow is enabled;
+configure `GEMINI_API_KEY` and optionally `GEMINI_MODEL` in ignored `.env.local`.
 
 ## Commands
 

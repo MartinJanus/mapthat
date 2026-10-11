@@ -23,17 +23,36 @@ const replySchema = z.object({
   message_id: z.string().min(1),
 });
 
+const MAX_TEXT_BYTES = 1000;
+
+export type SendText = (
+  recipient: InstagramId,
+  text: string,
+) => Promise<SendResult>;
+
 export function createInstagramSender(
   config: WebhookConfig,
   http: AxiosInstance = axios,
 ) {
-  return async (recipient: InstagramId): Promise<SendResult> => {
+  const sendText = createInstagramTextSender(config, http);
+  return async (recipient: InstagramId): Promise<SendResult> =>
+    sendText(recipient, FIXED_REPLY);
+}
+
+export function createInstagramTextSender(
+  config: WebhookConfig,
+  http: AxiosInstance = axios,
+): SendText {
+  return async (recipient, text): Promise<SendResult> => {
+    if (Buffer.byteLength(text, "utf8") > MAX_TEXT_BYTES) {
+      return { kind: "failed", reason: "response" };
+    }
     try {
       const response = await http.post<unknown>(
         `https://graph.instagram.com/${config.INSTAGRAM_API_VERSION}/${config.INSTAGRAM_ACCOUNT_ID}/messages`,
         {
           recipient: { id: recipient },
-          message: { text: FIXED_REPLY },
+          message: { text },
         },
         {
           ...createInstagramRequestOptions(config.INSTAGRAM_ACCESS_TOKEN),
