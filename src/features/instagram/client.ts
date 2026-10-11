@@ -1,8 +1,12 @@
-import axios, { AxiosError } from "axios";
+import axios from "axios";
 import type { AxiosInstance } from "axios";
 import { z } from "zod";
 import { instagramIdSchema } from "./config";
 import type { InstagramId, WebhookConfig } from "./config";
+import {
+  classifyInstagramRequestFailure,
+  createInstagramRequestOptions,
+} from "./http";
 
 export const FIXED_REPLY =
   "Thanks! MapThat received your message. This is a connectivity test.";
@@ -32,14 +36,7 @@ export function createInstagramSender(
           message: { text: FIXED_REPLY },
         },
         {
-          headers: { Authorization: `Bearer ${config.INSTAGRAM_ACCESS_TOKEN}` },
-          adapter: "http",
-          timeout: 5000,
-          signal: AbortSignal.timeout(5000),
-          maxRedirects: 0,
-          validateStatus: () => true,
-          maxContentLength: 64 * 1024,
-          responseType: "text",
+          ...createInstagramRequestOptions(config.INSTAGRAM_ACCESS_TOKEN),
         },
       );
       if (response.status < 200 || response.status >= 300) {
@@ -54,18 +51,8 @@ export function createInstagramSender(
         ? { kind: "sent" }
         : { kind: "failed", reason: "response" };
     } catch (error) {
-      if (error instanceof SyntaxError) {
-        return { kind: "failed", reason: "response" };
-      }
-      if (axios.isAxiosError(error)) {
-        return {
-          kind: "failed",
-          reason:
-            error.code === AxiosError.ERR_BAD_RESPONSE
-              ? "response"
-              : "transport",
-        };
-      }
+      const reason = classifyInstagramRequestFailure(error);
+      if (reason) return { kind: "failed", reason };
       throw error;
     }
   };
