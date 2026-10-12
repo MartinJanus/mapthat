@@ -1,10 +1,13 @@
 import { z } from "zod";
 import { instagramIdSchema } from "./config";
 import type { InstagramId } from "./config";
-import type { SendText } from "./client";
+import type { SendText, InstagramMessenger } from "./client";
+import { preparePlaceCards, splitMessageText } from "./place-cards";
+import type { MatchPlace } from "../places/google";
 import type { envelopeSchema } from "./messages";
 import { prepareCaptionPlaceResults } from "../places/caption";
 import type { CaptionExtractionResult } from "../places/caption";
+import { createCachedReelExtractor } from "./cached-reel-extractor";
 
 const entrySchema = z.object({
   id: instagramIdSchema,
@@ -19,7 +22,11 @@ const reelMessageSchema = z.object({
     attachments: z.array(
       z.object({
         type: z.literal("ig_reel"),
-        payload: z.object({ title: z.string().trim().min(1) }),
+        payload: z.object({
+          title: z.string().trim().min(1),
+          reel_video_id: z.string().regex(/^\d+$/).optional().catch(undefined),
+          url: z.string().optional().catch(undefined),
+        }),
       }),
     ),
     is_echo: z.boolean().optional(),
@@ -38,18 +45,22 @@ export type ReelMessageSummary = {
   readonly duplicate: number;
 };
 
-export function createReelMessageProcessor(options: {
+export function createReelMessageProcessor(options: Parameters<typeof createCachedReelExtractor>[0] & {
   readonly now?: () => number;
   readonly extract: (caption: string) => Promise<CaptionExtractionResult>;
+  readonly match?: MatchPlace;
 }) {
   const now = options.now ?? Date.now;
   const attempts = new Map<string, number>();
+  const extractReel = createCachedReelExtractor(options);
 
   return async (
     envelope: z.infer<typeof envelopeSchema>,
     account: InstagramId,
-    sendText: SendText,
+    messenger: SendText | InstagramMessenger,
   ): Promise<ReelMessageSummary> => {
+    const sendText =
+      typeof messenger === "function" ? messenger : messenger.sendText;
     const summary = { sent: 0, failed: 0, ignored: 0, duplicate: 0 };
     removeExpiredAttempts(attempts, now());
     if (envelope.object !== "instagram") return { ...summary, ignored: 1 };
@@ -72,6 +83,14 @@ export function createReelMessageProcessor(options: {
           continue;
         }
         attempts.set(key, now() + DEDUPLICATION_RETENTION_MS);
+        const recipient = event.data.sender.id;
+
+        if (typeof messenger !== "function") {
+          await messenger.reactToMessage(
+            event.data.sender.id,
+            event.data.message.mid,
+          );
+        }
 
         const first = await sendText(
           event.data.sender.id,
@@ -83,13 +102,59 @@ export function createReelMessageProcessor(options: {
         }
         summary.sent++;
 
-        const result = await options.extract(
-          event.data.message.attachments[0].payload.title,
-        );
+        const result = await extractReel(event.data.message.attachments[0].payload);
+        if (result.kind === "extracted" && typeof messenger !== "function") {
+          const prepared = await preparePlaceCards(result.value, options.match);
+          for (const text of prepared.texts) await sendReply(text);
+          for (let offset = 0; offset < prepared.cards.length; offset += 10) {
+            const cards = prepared.cards.slice(offset, offset + 10);
+            let creditsSent = true;
+            for (const card of cards) {
+              for (const credit of card.attributions) {
+                if (!(await sendReply(credit))) creditsSent = false;
+              }
+            }
+            if (!creditsSent) {
+              for (const card of cards) await sendReply(card.fallback);
+              continue;
+            }
+            const sent = await messenger.sendGenericTemplate(
+              event.data.sender.id,
+              cards.map((card) => card.element),
+            );
+            switch (sent.kind) {
+              case "sent":
+                summary.sent++;
+                break;
+              case "failed":
+                summary.failed++;
+                for (const card of cards) await sendReply(card.fallback);
+                break;
+              default: {
+                const exhaustive: never = sent;
+                return exhaustive;
+              }
+            }
+          }
+          continue;
+        }
         for (const text of formatExtractionReply(result)) {
           const sent = await sendText(event.data.sender.id, text);
           if (sent.kind === "sent") summary.sent++;
           else summary.failed++;
+        }
+
+        async function sendReply(text: string) {
+          let success = true;
+          for (const part of splitMessageText(text)) {
+            const sent = await sendText(recipient, part);
+            if (sent.kind === "sent") summary.sent++;
+            else {
+              summary.failed++;
+              success = false;
+            }
+          }
+          return success;
         }
       }
     }

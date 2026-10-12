@@ -1,11 +1,19 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { verifyConfigSchema, webhookConfigSchema } from "./config";
-import { createInstagramSender, createInstagramTextSender } from "./client";
+import { createInstagramSender, createInstagramMessenger } from "./client";
+import {
+  createGooglePlacesMatcher,
+  googlePlacesConfigSchema,
+} from "../places/google";
+import type { MatchPlace } from "../places/google";
 import { createMessageProcessor, envelopeSchema } from "./messages";
 import { createReelCapture } from "./reel-capture";
 import { createReelMessageProcessor } from "./reel-messages";
 import { geminiConfigSchema } from "../places/config";
 import { createGeminiCaptionExtractor } from "../places/gemini";
+import type { CaptionExtractionResult } from "../places/caption";
+import { createFileExtractionCache } from "../places/extraction-cache";
+import type { ReelExtractionCache } from "../places/extraction-cache";
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const responseHeaders = { "Cache-Control": "no-store" } as const;
@@ -20,19 +28,45 @@ export function createWebhookHandlers(options: {
   readonly environment: () => unknown;
   readonly processMessages?: ReturnType<typeof createMessageProcessor>;
   readonly sender?: typeof createInstagramSender;
+  readonly messenger?: typeof createInstagramMessenger;
+  readonly extract?: (caption: string) => Promise<CaptionExtractionResult>;
+  readonly match?: MatchPlace;
+  readonly extractionCache?: ReelExtractionCache;
   readonly captureReel?: ReturnType<typeof createReelCapture>;
   readonly log?: (record: Readonly<Record<string, string | number>>) => void;
 }) {
   const processMessages = options.processMessages ?? createMessageProcessor();
   const sender = options.sender ?? createInstagramSender;
   const captureReel = options.captureReel ?? createReelCapture();
-  const processReels = createReelMessageProcessor({
-    extract: (caption) =>
-      createGeminiCaptionExtractor(
-        geminiConfigSchema.parse(options.environment()),
-      )(caption),
-  });
   const log = options.log ?? ((record) => console.info(JSON.stringify(record)));
+  const extractionConfig = geminiConfigSchema.safeParse(options.environment());
+  const placesConfig = googlePlacesConfigSchema.safeParse(
+    options.environment(),
+  );
+  const match =
+    options.match ??
+    (placesConfig.success
+      ? createGooglePlacesMatcher(placesConfig.data)
+      : undefined);
+  const processReels = createReelMessageProcessor({
+    cache: options.extractionCache ?? createFileExtractionCache(),
+    version: `caption-v1:${extractionConfig.success ? extractionConfig.data.GEMINI_MODEL : "default"}`,
+    onCacheError: () => log({ event: "instagram.extraction_cache_failed", level: "warn" }),
+    extract:
+      options.extract ??
+      (async (caption) => {
+        const config = geminiConfigSchema.safeParse(options.environment());
+        if (!config.success) return { kind: "invalid-output" };
+        try {
+          return await createGeminiCaptionExtractor(config.data)(caption);
+        } catch (error) {
+          if (!(error instanceof Error)) throw error;
+          log({ event: "instagram.caption_extraction_failed", level: "error" });
+          return { kind: "invalid-output" };
+        }
+      }),
+    match,
+  });
   const reply = (body: string, status: number) =>
     new Response(body, {
       status,
@@ -103,7 +137,7 @@ export function createWebhookHandlers(options: {
         const reelSummary = await processReels(
           envelope.data,
           config.data.INSTAGRAM_ACCOUNT_ID,
-          createInstagramTextSender(config.data),
+          (options.messenger ?? createInstagramMessenger)(config.data),
         );
         log({
           event: "instagram.reels_processed",

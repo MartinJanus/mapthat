@@ -78,9 +78,28 @@ export function createPlaceSearchLinks(
   const query = [mention.name, mention.city, mention.country]
     .filter((part): part is string => part !== null)
     .join(", ");
-  const encodedQuery = encodeURIComponent(query);
+  const encodedQuery =
+    encodeURIComponent(query).length <= 850
+      ? encodeURIComponent(query)
+      : [
+          limitEncoded(mention.name, 450),
+          limitEncoded(mention.city ?? "", 180),
+          limitEncoded(mention.country ?? "", 180),
+        ]
+          .filter(Boolean)
+          .join("%2C%20");
   return {
     googleMaps: `https://www.google.com/maps/search/?api=1&query=${encodedQuery}`,
     appleMaps: `https://maps.apple.com/?q=${encodedQuery}`,
   };
+}
+
+function limitEncoded(value: string, limit: number) {
+  let result = "";
+  for (const character of value) {
+    const encoded = encodeURIComponent(character);
+    if (result.length + encoded.length > limit) break;
+    result += encoded;
+  }
+  return result;
 }

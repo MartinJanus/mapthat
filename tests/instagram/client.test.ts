@@ -10,6 +10,8 @@ import {
   createInstagramSender,
   createInstagramTextSender,
   FIXED_REPLY,
+  reactToMessage,
+  sendGenericTemplate,
 } from "../../src/features/instagram/client";
 
 const config = webhookConfigSchema.parse({
@@ -35,6 +37,7 @@ async function withApi(
   run: (
     sender: ReturnType<typeof createInstagramSender>,
     requests: ObservedRequest[],
+    http: ReturnType<typeof axios.create>,
   ) => Promise<void>,
 ) {
   const requests: ObservedRequest[] = [];
@@ -69,7 +72,7 @@ async function withApi(
     return request;
   });
   try {
-    await run(createInstagramSender(config, http), requests);
+    await run(createInstagramSender(config, http), requests, http);
   } finally {
     const closed = once(server, "close");
     server.close();
@@ -79,6 +82,117 @@ async function withApi(
 }
 
 describe("Instagram official API adapter", () => {
+  it("reacts to the incoming message ID when acknowledging a Reel", async () => {
+    await withApi(
+      { status: 200, body: '{"success":true}' },
+      async (_, requests, http) => {
+        const result = await reactToMessage(
+          config,
+          recipient,
+          "incoming-reel",
+          "👀",
+          http,
+        );
+        expect(result).toEqual({ kind: "sent" });
+        expect(requests).toEqual([
+          {
+            method: "POST",
+            path: "/v25.0/10001/messages",
+            authorization: "Bearer synthetic-access-token",
+            body: {
+              recipient: { id: "20002" },
+              sender_action: "react",
+              payload: { message_id: "incoming-reel", reaction: "👀" },
+            },
+          },
+        ]);
+      },
+    );
+  });
+
+  it.each(["{}", '{"success":false}', "not JSON"])(
+    "rejects a malformed reaction response %s",
+    async (body) => {
+      await withApi({ status: 200, body }, async (_, requests, http) => {
+        expect(
+          await reactToMessage(config, recipient, "incoming", "👀", http),
+        ).toEqual({ kind: "failed", reason: "response" });
+        expect(requests).toHaveLength(1);
+      });
+    },
+  );
+
+  it("sends both Maps buttons and an image when given a place card", async () => {
+    const elements = [
+      {
+        title: "Yat Lok Restaurant",
+        subtitle: "Hong Kong",
+        image_url: "https://images.example.test/place.jpg",
+        buttons: [
+          {
+            type: "web_url" as const,
+            title: "Google Maps",
+            url: "https://www.google.com/maps/search/?api=1&query=Yat%20Lok",
+          },
+          {
+            type: "web_url" as const,
+            title: "Apple Maps",
+            url: "https://maps.apple.com/?q=Yat%20Lok",
+          },
+        ],
+      },
+    ];
+    await withApi(
+      { status: 200, body: '{"recipient_id":"20002","message_id":"card"}' },
+      async (_, requests, http) => {
+        expect(
+          await sendGenericTemplate(config, recipient, elements, http),
+        ).toEqual({ kind: "sent" });
+        expect(requests[0]?.body).toEqual({
+          recipient: { id: "20002" },
+          message: {
+            attachment: {
+              type: "template",
+              payload: { template_type: "generic", elements },
+            },
+          },
+        });
+      },
+    );
+  });
+
+  it("rejects oversized carousels and invalid images before making a request", async () => {
+    const element = {
+      title: "Place",
+      buttons: [
+        {
+          type: "web_url" as const,
+          title: "Google Maps",
+          url: "https://www.google.com/maps",
+        },
+      ],
+    };
+    await withApi({ status: 200, body: "{}" }, async (_, requests, http) => {
+      expect(
+        await sendGenericTemplate(
+          config,
+          recipient,
+          Array.from({ length: 11 }, () => element),
+          http,
+        ),
+      ).toEqual({ kind: "failed", reason: "response" });
+      expect(
+        await sendGenericTemplate(
+          config,
+          recipient,
+          [{ ...element, image_url: "http://example.test/private.jpg" }],
+          http,
+        ),
+      ).toEqual({ kind: "failed", reason: "response" });
+      expect(requests).toEqual([]);
+    });
+  });
+
   it("sends a fixed reply with a private bearer token when a valid recipient is supplied", async () => {
     await withApi(
       {
