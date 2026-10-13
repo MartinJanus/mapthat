@@ -51,7 +51,8 @@ export function createWebhookHandlers(options: {
   const processReels = createReelMessageProcessor({
     cache: options.extractionCache ?? createFileExtractionCache(),
     version: `caption-v1:${extractionConfig.success ? extractionConfig.data.GEMINI_MODEL : "default"}`,
-    onCacheError: () => log({ event: "instagram.extraction_cache_failed", level: "warn" }),
+    onCacheError: () =>
+      log({ event: "instagram.extraction_cache_failed", level: "warn" }),
     extract:
       options.extract ??
       (async (caption) => {

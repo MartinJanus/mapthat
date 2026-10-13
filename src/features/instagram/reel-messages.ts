@@ -45,11 +45,13 @@ export type ReelMessageSummary = {
   readonly duplicate: number;
 };
 
-export function createReelMessageProcessor(options: Parameters<typeof createCachedReelExtractor>[0] & {
-  readonly now?: () => number;
-  readonly extract: (caption: string) => Promise<CaptionExtractionResult>;
-  readonly match?: MatchPlace;
-}) {
+export function createReelMessageProcessor(
+  options: Parameters<typeof createCachedReelExtractor>[0] & {
+    readonly now?: () => number;
+    readonly extract: (caption: string) => Promise<CaptionExtractionResult>;
+    readonly match?: MatchPlace;
+  },
+) {
   const now = options.now ?? Date.now;
   const attempts = new Map<string, number>();
   const extractReel = createCachedReelExtractor(options);
@@ -102,7 +104,9 @@ export function createReelMessageProcessor(options: Parameters<typeof createCach
         }
         summary.sent++;
 
-        const result = await extractReel(event.data.message.attachments[0].payload);
+        const result = await extractReel(
+          event.data.message.attachments[0].payload,
+        );
         if (result.kind === "extracted" && typeof messenger !== "function") {
           const prepared = await preparePlaceCards(result.value, options.match);
           for (const text of prepared.texts) await sendReply(text);

@@ -17,11 +17,17 @@ export function createCachedReelExtractor(options: {
     if (active) return active;
     const task = loadOrExtract(key, reel.title);
     pending.set(key, task);
-    try { return await task; }
-    finally { pending.delete(key); }
+    try {
+      return await task;
+    } finally {
+      pending.delete(key);
+    }
   };
 
-  async function loadOrExtract(key: string, caption: string): Promise<CaptionExtractionResult> {
+  async function loadOrExtract(
+    key: string,
+    caption: string,
+  ): Promise<CaptionExtractionResult> {
     const cache = options.cache;
     if (!cache) return options.extract(caption);
     try {
@@ -35,11 +41,19 @@ export function createCachedReelExtractor(options: {
     switch (result.kind) {
       case "extracted":
       case "no-place":
-        try { await cache.put(key, result); }
-        catch (error) { if (!(error instanceof Error)) throw error; options.onCacheError?.(); }
+        try {
+          await cache.put(key, result);
+        } catch (error) {
+          if (!(error instanceof Error)) throw error;
+          options.onCacheError?.();
+        }
         return result;
-      case "invalid-output": return result;
-      default: { const exhaustive: never = result; return exhaustive; }
+      case "invalid-output":
+        return result;
+      default: {
+        const exhaustive: never = result;
+        return exhaustive;
+      }
     }
   }
 }
