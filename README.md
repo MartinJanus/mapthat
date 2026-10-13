@@ -1,8 +1,8 @@
 # MapThat
 
 MapThat will turn places mentioned in Instagram videos into map results. This
-repository currently provides the Next.js App Router foundation with strict
-TypeScript, a minimal homepage, and a health endpoint.
+repository provides a Next.js App Router foundation and an Instagram prototype
+that extracts places from Reel captions and replies with Maps-button cards.
 
 ## Requirements
 
@@ -41,6 +41,13 @@ only when the webhook is called, so builds and tests need no live Meta account.
 
 See [the Instagram connectivity experiment](docs/instagram-connectivity.md) for
 Meta setup, HTTPS callback verification, limitations, and the real-account test.
+See [the shared-Reel capture guide](docs/instagram-reel-capture.md)
+to inspect the raw webhook JSON from any Reel share.
+Caption interpretation uses Gemini only when the extraction flow is enabled;
+configure `GEMINI_API_KEY` and optionally `GEMINI_MODEL` in ignored `.env.local`.
+Configure `GOOGLE_PLACES_API_KEY` for place matching and photo cards; without it,
+cards use explicitly unverified caption search links. See the Reel guide for
+confidence rules, card limits, attribution, and text fallbacks.
 
 ## Commands
 
@@ -100,7 +107,9 @@ logic so the Instagram bot, discovery pages, and extraction API can reuse it.
 Introduce modules when there is behavior to own rather than creating empty
 service layers now.
 
-The Instagram integration is a fixed-reply experiment. Extraction, databases,
+The Instagram integration includes the fixed-reply connectivity experiment and
+caption-based place extraction with reactions, Maps-button cards, optional Google
+Places matching/photos, and text fallbacks. Video/audio extraction, databases,
 background jobs, production deployment, and discovery rankings remain outside it.
 
 ## Project workflow and scope

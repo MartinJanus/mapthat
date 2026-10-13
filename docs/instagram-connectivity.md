@@ -2,17 +2,17 @@
 
 ## Status
 
-The signed endpoint and official API adapter are implemented. All 60 automated
-tests pass from the separate `tests/` directory, and `npm run check` passes
+The signed endpoint and official API adapter are implemented. Automated tests
+run from the separate `tests/` directory, and `npm run check` passes
 formatting, lint, TypeScript, tests, and the production build. On 2026-10-10,
 the running production endpoint was exercised through a temporary HTTPS tunnel:
 the matching challenge returned its exact value with 200, a wrong token and
 unsigned/altered requests returned 403, and a signed empty batch returned 200.
 Signed malformed JSON returned 400 through the local production HTTP endpoint.
 
-Meta's dashboard verification and a real-account DM/reply are **pending**. Our
-HTTPS probe is not proof of Meta verification or real-message delivery. Do not
-close issue #3 until their redacted evidence is recorded here.
+The operator has confirmed a real-account DM received the fixed reply. Our HTTPS
+probe is not proof of Meta verification or real-message delivery; record the
+redacted event and response evidence below before closing issue #3.
 
 On 2026-10-10, the configured account's `subscribed_apps` read returned no
 subscriptions. The account-level `messages` subscription was then enabled using
@@ -206,7 +206,7 @@ For the real-account smoke test:
 | Meta HTTPS challenge verification                  | Pending                                                       |
 | Real eligible sender and app/account subscriptions | Pending                                                       |
 | Redacted real received event                       | Pending                                                       |
-| Successful real API reply and inbox confirmation   | Pending                                                       |
+| Successful real API reply and inbox confirmation   | Reported by operator; redacted evidence pending               |
 | Live duplicate suppression                         | Pending; synthetic automation verifies process-local handling |
 | Ordinary-user beta access                          | Unproven; not established by a tester experiment              |
 

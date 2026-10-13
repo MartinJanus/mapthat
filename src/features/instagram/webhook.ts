@@ -1,20 +1,72 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { verifyConfigSchema, webhookConfigSchema } from "./config";
-import { createInstagramSender } from "./client";
+import { createInstagramSender, createInstagramMessenger } from "./client";
+import {
+  createGooglePlacesMatcher,
+  googlePlacesConfigSchema,
+} from "../places/google";
+import type { MatchPlace } from "../places/google";
 import { createMessageProcessor, envelopeSchema } from "./messages";
+import { createReelCapture } from "./reel-capture";
+import { createReelMessageProcessor } from "./reel-messages";
+import { geminiConfigSchema } from "../places/config";
+import { createGeminiCaptionExtractor } from "../places/gemini";
+import type { CaptionExtractionResult } from "../places/caption";
+import { createFileExtractionCache } from "../places/extraction-cache";
+import type { ReelExtractionCache } from "../places/extraction-cache";
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const responseHeaders = { "Cache-Control": "no-store" } as const;
+
+type WebhookBody =
+  | { readonly kind: "body"; readonly value: Buffer }
+  | { readonly kind: "missing" }
+  | { readonly kind: "too-large" }
+  | { readonly kind: "unreadable" };
 
 export function createWebhookHandlers(options: {
   readonly environment: () => unknown;
   readonly processMessages?: ReturnType<typeof createMessageProcessor>;
   readonly sender?: typeof createInstagramSender;
+  readonly messenger?: typeof createInstagramMessenger;
+  readonly extract?: (caption: string) => Promise<CaptionExtractionResult>;
+  readonly match?: MatchPlace;
+  readonly extractionCache?: ReelExtractionCache;
+  readonly captureReel?: ReturnType<typeof createReelCapture>;
   readonly log?: (record: Readonly<Record<string, string | number>>) => void;
 }) {
   const processMessages = options.processMessages ?? createMessageProcessor();
   const sender = options.sender ?? createInstagramSender;
+  const captureReel = options.captureReel ?? createReelCapture();
   const log = options.log ?? ((record) => console.info(JSON.stringify(record)));
+  const extractionConfig = geminiConfigSchema.safeParse(options.environment());
+  const placesConfig = googlePlacesConfigSchema.safeParse(
+    options.environment(),
+  );
+  const match =
+    options.match ??
+    (placesConfig.success
+      ? createGooglePlacesMatcher(placesConfig.data)
+      : undefined);
+  const processReels = createReelMessageProcessor({
+    cache: options.extractionCache ?? createFileExtractionCache(),
+    version: `caption-v1:${extractionConfig.success ? extractionConfig.data.GEMINI_MODEL : "default"}`,
+    onCacheError: () => log({ event: "instagram.extraction_cache_failed", level: "warn" }),
+    extract:
+      options.extract ??
+      (async (caption) => {
+        const config = geminiConfigSchema.safeParse(options.environment());
+        if (!config.success) return { kind: "invalid-output" };
+        try {
+          return await createGeminiCaptionExtractor(config.data)(caption);
+        } catch (error) {
+          if (!(error instanceof Error)) throw error;
+          log({ event: "instagram.caption_extraction_failed", level: "error" });
+          return { kind: "invalid-output" };
+        }
+      }),
+    match,
+  });
   const reply = (body: string, status: number) =>
     new Response(body, {
       status,
@@ -52,28 +104,11 @@ export function createWebhookHandlers(options: {
       if (!signature || !/^sha256=[a-fA-F0-9]{64}$/.test(signature)) {
         return reply("Forbidden", 403);
       }
-      const reader = request.body?.getReader();
-      if (!reader) return reply("Missing body", 400);
-      const chunks: Uint8Array[] = [];
-      let size = 0;
-      try {
-        while (true) {
-          const part = await reader.read();
-          if (part.done) break;
-          size += part.value.byteLength;
-          if (size > MAX_BODY_BYTES) {
-            await reader.cancel();
-            return reply("Body too large", 413);
-          }
-          chunks.push(part.value);
-        }
-      } catch (error) {
-        if (error instanceof Error) return reply("Unreadable body", 400);
-        throw error;
-      } finally {
-        reader.releaseLock();
-      }
-      const body = Buffer.concat(chunks);
+      const rawBody = await readWebhookBody(request);
+      if (rawBody.kind === "missing") return reply("Missing body", 400);
+      if (rawBody.kind === "too-large") return reply("Body too large", 413);
+      if (rawBody.kind === "unreadable") return reply("Unreadable body", 400);
+      const body = rawBody.value;
       const expected = createHmac("sha256", config.data.INSTAGRAM_APP_SECRET)
         .update(body)
         .digest();
@@ -92,6 +127,27 @@ export function createWebhookHandlers(options: {
       }
       const envelope = envelopeSchema.safeParse(input);
       if (!envelope.success) return reply("Invalid event envelope", 400);
+      try {
+        await captureReel(envelope.data, config.data);
+      } catch (error) {
+        if (!(error instanceof Error)) throw error;
+        log({ event: "instagram.reel_capture_failed", level: "error" });
+      }
+      try {
+        const reelSummary = await processReels(
+          envelope.data,
+          config.data.INSTAGRAM_ACCOUNT_ID,
+          (options.messenger ?? createInstagramMessenger)(config.data),
+        );
+        log({
+          event: "instagram.reels_processed",
+          level: reelSummary.failed ? "error" : "info",
+          ...reelSummary,
+        });
+      } catch (error) {
+        if (!(error instanceof Error)) throw error;
+        log({ event: "instagram.reel_processing_failed", level: "error" });
+      }
       const summary = await processMessages(
         envelope.data,
         config.data.INSTAGRAM_ACCOUNT_ID,
@@ -105,4 +161,29 @@ export function createWebhookHandlers(options: {
       return reply("EVENT_RECEIVED", summary.capacity ? 503 : 200);
     },
   };
+}
+
+async function readWebhookBody(request: Request): Promise<WebhookBody> {
+  const reader = request.body?.getReader();
+  if (!reader) return { kind: "missing" };
+
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const part = await reader.read();
+      if (part.done) return { kind: "body", value: Buffer.concat(chunks) };
+      size += part.value.byteLength;
+      if (size > MAX_BODY_BYTES) {
+        await reader.cancel();
+        return { kind: "too-large" };
+      }
+      chunks.push(part.value);
+    }
+  } catch (error) {
+    if (error instanceof Error) return { kind: "unreadable" };
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
 }
