@@ -31,29 +31,33 @@ uses Text Search (New) with explicit fields and requests at most 20 candidates
 per mention. Each request has a five-second timeout, no retries, and a response
 size limit. Ordinary tests use local HTTP fixtures and never need a live key.
 
-Matching requires every supplied city/country to match a relevant address
-component. The selected name must match exactly after case, punctuation, and
-accent normalization. Word order is retained. The selected candidate must also
-lead the runner-up by at least 0.2 in token overlap score. Accepted matches are
-labelled **high confidence**. This is a local heuristic label, not a probability
-supplied by Google or proof of correctness. Photo availability is checked only
-after identifying the place; it does not resolve ambiguous branches. Competing
-branches, conflicting geography, and weak names produce an ambiguity response.
-Empty search results receive a no-match explanation. Provider failures receive
-explicitly unverified caption search links in text.
+Matching requires supplied geography to agree with address components, including
+Hong Kong country-style components and HK/SAR aliases. Names use normalized token
+overlap, distinctive name tokens after removing business descriptors, and compact
+handle comparison. Contextual destination suffixes such as `hk` are removed from
+compact handles when the caption identifies that destination. A candidate must
+score at least 0.8 and lead the runner-up by 0.2. Competing branches remain
+ambiguous. Non-exact accepted names are shown as **Likely match**; this is a
+heuristic, not a calibrated probability or proof of the branch.
+
+Gemini is instructed to apply shared city/country context only when the whole
+caption supports it and to preserve per-place locations in multi-city lists.
+Supporting quotes must occur in the caption. The extraction cache version is
+bumped so earlier results do not suppress this change.
 
 Matched Google Maps buttons use a place ID and coordinates; Apple Maps buttons
-use the same coordinates. Cards identify Google Maps as the data source. The
-first photo returned for the matched place is resolved server-side to an HTTPS image URL using
-`skipHttpRedirect=true`; API keys are sent in headers and never included in
-outbound cards. A photo with one short author name receives a third credit button.
-Long author names and multiple author credits are sent in full as text before
-the card; the first photo is still displayed. If the correct place has no photo,
-or its first photo cannot be retrieved, MapThat sends an explanation and Maps
-links as text. It does not switch to a different location or a later photo.
-Additional place-provider attributions are sent as text before the card.
-Place search results and photo names are not cached or
-written to Reel captures.
+use the same coordinates. Cards retain the address and identify Google Maps as
+the data source. Up to three photo resources are tried for an accepted place.
+Invalid optional photo metadata cannot discard a valid business. Every author
+is credited in full in text before the card; a third button links to a single author when their name fits. Multiple or long
+author names are credited in the preceding text without adding extra buttons.
+Multiple authors and long names no longer cause photos to be omitted. Photos
+that cannot be retrieved still yield a card without an image.
+
+API keys are sent in headers and never included in cards. Place search results
+and photo names are not cached or written to Reel captures. Server diagnostics
+record stage, HTTP status, timeout/response failure category, or invalid field
+paths. They omit keys, request URLs, response values, and caption contents.
 
 If Meta cannot send a card, MapThat sends the place details and both Maps links
 as text instead. Text is split at the 1,000-byte boundary, preserving complete

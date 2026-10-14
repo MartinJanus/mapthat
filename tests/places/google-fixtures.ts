@@ -37,6 +37,8 @@ export async function withPlaces(
     readonly status?: number;
     readonly photo?: unknown;
     readonly photoStatus?: number;
+    readonly failedPhotoPaths?: readonly string[];
+    readonly log?: (record: Readonly<Record<string, string | number>>) => void;
   } = {},
 ) {
   const requests: ObservedRequest[] = [];
@@ -52,7 +54,12 @@ export async function withPlaces(
     });
     const photo = request.method === "GET";
     reply.writeHead(
-      photo ? (options.photoStatus ?? 200) : (options.status ?? 200),
+      photo &&
+        options.failedPhotoPaths?.includes(request.url?.split("?")[0] ?? "")
+        ? 403
+        : photo
+          ? (options.photoStatus ?? 200)
+          : (options.status ?? 200),
       { "Content-Type": "application/json" },
     );
     reply.end(
@@ -90,6 +97,7 @@ export async function withPlaces(
       createGooglePlacesMatcher(
         { GOOGLE_PLACES_API_KEY: "synthetic-google-key" },
         http,
+        { log: options.log ?? (() => {}) },
       ),
       requests,
     );

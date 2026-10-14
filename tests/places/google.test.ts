@@ -106,13 +106,13 @@ describe("Google Places matching", () => {
     },
   );
 
-  it("requires more evidence when the name overlap is strong but not exact", async () => {
+  it("accepts a unique descriptor variation as a likely match", async () => {
     await withPlaces(
       { places: [place("a", "The Little Cafe Test Berlin")] },
       async (match) => {
         expect(
           await match({ ...mention, name: "Little Cafe Test Berlin" }),
-        ).toEqual({ kind: "ambiguous" });
+        ).toMatchObject({ kind: "matched", place: { confidence: "medium" } });
       },
     );
   });
