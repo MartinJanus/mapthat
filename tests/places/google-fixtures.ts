@@ -54,7 +54,8 @@ export async function withPlaces(
     });
     const photo = request.method === "GET";
     reply.writeHead(
-      photo && options.failedPhotoPaths?.includes(request.url?.split("?")[0] ?? "")
+      photo &&
+        options.failedPhotoPaths?.includes(request.url?.split("?")[0] ?? "")
         ? 403
         : photo
           ? (options.photoStatus ?? 200)

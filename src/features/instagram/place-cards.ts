@@ -102,7 +102,8 @@ function buildMatchedCard(place: MatchedPlace): PlaceCard {
         (value) => `${value.provider}: ${value.providerUri}`,
       ),
       ...credits.map(
-        (value) => `Photo of ${place.name} by ${value.displayName}: ${value.uri}`,
+        (value) =>
+          `Photo of ${place.name} by ${value.displayName}: ${value.uri}`,
       ),
     ],
   };

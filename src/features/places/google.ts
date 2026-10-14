@@ -248,9 +248,7 @@ function nameScore(expected: string, actual: string) {
   const aa = core(expected);
   const bb = core(actual);
   const sameCore =
-    aa.length >= 2 &&
-    bb.length >= 2 &&
-    aa.join(" ") === bb.join(" ");
+    aa.length >= 2 && bb.length >= 2 && aa.join(" ") === bb.join(" ");
   const compactMatch = aa.join("") === bb.join("") && bb.join("").length >= 6;
   return Math.max(overlap, sameCore ? 0.92 : 0, compactMatch ? 0.92 : 0);
 }

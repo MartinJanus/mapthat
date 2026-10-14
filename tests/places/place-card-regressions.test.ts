@@ -50,7 +50,10 @@ describe("place photo cards", () => {
     });
     expect(prepared.cards[0]?.element.buttons).toHaveLength(2);
     expect(prepared.cards[0]?.attributions).toEqual(
-      credits.map((credit) => `Photo of Cafe Test by ${credit.displayName}: ${credit.uri}`),
+      credits.map(
+        (credit) =>
+          `Photo of Cafe Test by ${credit.displayName}: ${credit.uri}`,
+      ),
     );
   });
 });
