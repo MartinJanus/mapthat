@@ -27,28 +27,32 @@ Without `GOOGLE_PLACES_API_KEY`, cards are labelled **Caption candidate (not
 verified)** and contain search links. To enable matching and images, enable
 **Places API (New)** in a Google Cloud project with billing, configure its
 server-side API key in ignored `.env.local`, and restart MapThat. The adapter
-uses Text Search (New) with explicit fields and requests at most five candidates
+uses Text Search (New) with explicit fields and requests at most 20 candidates
 per mention. Each request has a five-second timeout, no retries, and a response
 size limit. Ordinary tests use local HTTP fixtures and never need a live key.
 
 Matching requires every supplied city/country to match a relevant address
-component. Names are compared after case, punctuation, and accent normalization,
-using token overlap. A candidate must score at least 0.8 and lead the runner-up
-by at least 0.15. An exact normalized token match is labelled **high confidence**;
-an accepted non-exact match is **medium confidence**. These are local heuristic
-labels, not a probability supplied by Google or proof of correctness. Competing
+component. The selected name must match exactly after case, punctuation, and
+accent normalization. Word order is retained. The selected candidate must also
+lead the runner-up by at least 0.2 in token overlap score. Accepted matches are
+labelled **high confidence**. This is a local heuristic label, not a probability
+supplied by Google or proof of correctness. Photo availability is checked only
+after identifying the place; it does not resolve ambiguous branches. Competing
 branches, conflicting geography, and weak names produce an ambiguity response.
 Empty search results receive a no-match explanation. Provider failures receive
 explicitly unverified caption search links in text.
 
 Matched Google Maps buttons use a place ID and coordinates; Apple Maps buttons
 use the same coordinates. Cards identify Google Maps as the data source. The
-first supported place photo is resolved server-side to an HTTPS image URL using
+first photo returned for the matched place is resolved server-side to an HTTPS image URL using
 `skipHttpRedirect=true`; API keys are sent in headers and never included in
-outbound cards. A photo with a single author receives a third credit button.
-Photos whose author credits cannot fit in the card are omitted, as are photos
-that cannot be retrieved. Additional place-provider attributions are sent as
-text before the card. Place search results and photo names are not cached or
+outbound cards. A photo with one short author name receives a third credit button.
+Long author names and multiple author credits are sent in full as text before
+the card; the first photo is still displayed. If the correct place has no photo,
+or its first photo cannot be retrieved, MapThat sends an explanation and Maps
+links as text. It does not switch to a different location or a later photo.
+Additional place-provider attributions are sent as text before the card.
+Place search results and photo names are not cached or
 written to Reel captures.
 
 If Meta cannot send a card, MapThat sends the place details and both Maps links

@@ -1,87 +1,20 @@
 import ky, { NetworkError, TimeoutError, ResponseSizeError } from "ky";
 import { z } from "zod";
-import type { PlaceMention, PlaceSearchLinks } from "./caption";
-
-export const googlePlacesConfigSchema = z
-  .object({
-    GOOGLE_PLACES_API_KEY: z.string().trim().min(1),
-  })
-  .readonly();
-export type GooglePlacesConfig = z.infer<typeof googlePlacesConfigSchema>;
-export const googlePlaceIdSchema = z
-  .string()
-  .min(1)
-  .max(255)
-  .brand<"GooglePlaceId">();
-
-const publicUrlSchema = z.url().refine((value) => {
-  const url = new URL(value);
-  return (
-    url.protocol === "https:" &&
-    !url.username &&
-    !url.password &&
-    !url.searchParams.has("key")
-  );
-});
-const attributionSchema = z
-  .object({
-    displayName: z.string().min(1),
-    uri: z
-      .string()
-      .transform((value) => (value.startsWith("//") ? `https:${value}` : value))
-      .pipe(publicUrlSchema),
-  })
-  .readonly();
-const photoSchema = z.object({
-  name: z.string().regex(/^places\/[A-Za-z0-9_-]+\/photos\/[A-Za-z0-9_-]+$/),
-  authorAttributions: z.array(attributionSchema).default([]),
-});
-const placeSchema = z.object({
-  id: googlePlaceIdSchema,
-  displayName: z.object({ text: z.string().min(1) }),
-  formattedAddress: z.string().min(1),
-  location: z.object({
-    latitude: z.number().min(-90).max(90),
-    longitude: z.number().min(-180).max(180),
-  }),
-  addressComponents: z.array(
-    z.object({
-      longText: z.string(),
-      shortText: z.string().optional(),
-      types: z.array(z.string()),
-    }),
-  ),
-  photos: z.array(photoSchema).default([]),
-  attributions: z
-    .array(
-      z.object({ provider: z.string().min(1), providerUri: publicUrlSchema }),
-    )
-    .default([]),
-});
-const searchSchema = z.object({
-  places: z.array(placeSchema).max(20).default([]),
-});
-type GooglePlace = z.infer<typeof placeSchema>;
-
-export type MatchedPlace = {
-  readonly id: GooglePlace["id"];
-  readonly name: string;
-  readonly address: string;
-  readonly confidence: "high" | "medium";
-  readonly links: PlaceSearchLinks;
-  readonly imageUrl?: string;
-  readonly photoCredit?: z.infer<typeof attributionSchema>;
-  readonly attributions: readonly {
-    readonly provider: string;
-    readonly providerUri: string;
-  }[];
-};
-export type PlaceMatchResult =
-  | { readonly kind: "matched"; readonly place: MatchedPlace }
-  | { readonly kind: "ambiguous" }
-  | { readonly kind: "not-found" }
-  | { readonly kind: "unavailable" };
-export type MatchPlace = (mention: PlaceMention) => Promise<PlaceMatchResult>;
+import type { PlaceMention } from "./caption";
+import { publicUrlSchema, searchSchema } from "./google-model";
+import type {
+  GooglePlacesConfig,
+  GooglePlace,
+  MatchPlace,
+  PlaceMatchResult,
+} from "./google-model";
+export { googlePlacesConfigSchema, googlePlaceIdSchema } from "./google-model";
+export type {
+  GooglePlacesConfig,
+  MatchedPlace,
+  MatchPlace,
+  PlaceMatchResult,
+} from "./google-model";
 
 export function createGooglePlacesMatcher(
   config: GooglePlacesConfig,
@@ -109,7 +42,7 @@ export function createGooglePlacesMatcher(
             textQuery: [mention.name, mention.city, mention.country]
               .filter(Boolean)
               .join(", "),
-            pageSize: 5,
+            pageSize: 20,
             languageCode: "en",
           },
         },
@@ -119,17 +52,11 @@ export function createGooglePlacesMatcher(
       if (!parsed.success) return { kind: "unavailable" };
       const result = selectPlaceMatch(mention, parsed.data.places);
       if (result.kind !== "matched") return result;
-      const selected = parsed.data.places.find(
+      const selected = parsed.data.places.findLast(
         (place) => place.id === result.place.id,
       );
-      const photo = selected?.photos.find(
-        (value) =>
-          value.authorAttributions.length <= 1 &&
-          value.authorAttributions.every(
-            (credit) => credit.displayName.length <= 20,
-          ),
-      );
-      if (!photo) return result;
+      const photo = selected?.photos[0];
+      if (!photo) return { kind: "no-photo", place: result.place };
       const imageUrl = await loadPhoto(photo.name);
       return imageUrl
         ? {
@@ -138,9 +65,10 @@ export function createGooglePlacesMatcher(
               ...result.place,
               imageUrl,
               photoCredit: photo.authorAttributions[0],
+              photoCredits: photo.authorAttributions,
             },
           }
-        : result;
+        : { kind: "no-photo", place: result.place };
     } catch (error) {
       if (
         error instanceof NetworkError ||
@@ -197,8 +125,9 @@ export function selectPlaceMatch(
   const second = ranked[1];
   if (
     !first ||
-    first.score < 0.8 ||
-    (second && first.score - second.score < 0.15)
+    !normalize(mention.name) ||
+    normalize(mention.name) !== normalize(first.place.displayName.text) ||
+    (second && first.score - second.score < 0.2)
   )
     return { kind: "ambiguous" };
   const query = `${first.place.location.latitude},${first.place.location.longitude}`;
@@ -208,7 +137,7 @@ export function selectPlaceMatch(
       id: first.place.id,
       name: first.place.displayName.text,
       address: first.place.formattedAddress,
-      confidence: first.score === 1 ? "high" : "medium",
+      confidence: "high",
       links: {
         googleMaps: `https://www.google.com/maps/search/?api=1&query=${query}&query_place_id=${encodeURIComponent(first.place.id)}`,
         appleMaps: `https://maps.apple.com/?q=${query}&ll=${query}`,

@@ -34,6 +34,11 @@ export async function preparePlaceCards(
       case "matched":
         cards.push(buildMatchedCard(result.place));
         break;
+      case "no-photo":
+        texts.push(
+          `${result.place.name}: I matched this location, but its first Google photo is unavailable.\nGoogle Maps: ${result.place.links.googleMaps}\nApple Maps: ${result.place.links.appleMaps}${result.place.attributions.map((value) => `\n${value.provider}: ${value.providerUri}`).join("")}`,
+        );
+        break;
       case "ambiguous":
         texts.push(
           `I found ${mention.name}, but couldn't confidently match it to one location.`,
@@ -66,24 +71,48 @@ function buildMatchedCard(place: MatchedPlace): PlaceCard {
     place.links,
   );
   const credit = place.photoCredit;
+  const credits = place.photoCredits ?? (credit ? [credit] : []);
+  const buttonCredit =
+    credits.length === 1 && credit && credit.displayName.length <= 20
+      ? credit
+      : undefined;
   return {
     element: {
       ...card.element,
       ...(place.imageUrl ? { image_url: place.imageUrl } : {}),
-      ...(credit
+      ...(credits.length
         ? {
-            subtitle: truncate(`${label} · Photo credit below`, 80),
+            subtitle: truncate(
+              `${label} · Photo credit${buttonCredit ? " below" : "s above"}`,
+              80,
+            ),
             buttons: [
               ...card.element.buttons,
-              { type: "web_url", title: credit.displayName, url: credit.uri },
+              ...(buttonCredit
+                ? [
+                    {
+                      type: "web_url" as const,
+                      title: buttonCredit.displayName,
+                      url: buttonCredit.uri,
+                    },
+                  ]
+                : []),
             ],
           }
         : {}),
     },
     fallback: `${place.name}\n${place.address}\n${label}\nGoogle Maps: ${place.links.googleMaps}\nApple Maps: ${place.links.appleMaps}${place.attributions.map((value) => `\n${value.provider}: ${value.providerUri}`).join("")}`,
-    attributions: place.attributions.map(
-      (value) => `${value.provider}: ${value.providerUri}`,
-    ),
+    attributions: [
+      ...place.attributions.map(
+        (value) => `${value.provider}: ${value.providerUri}`,
+      ),
+      ...(!buttonCredit
+        ? credits.map(
+            (value) =>
+              `Photo of ${place.name} by ${value.displayName}: ${value.uri}`,
+          )
+        : []),
+    ],
   };
 }
 

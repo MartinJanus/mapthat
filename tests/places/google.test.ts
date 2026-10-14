@@ -1,98 +1,5 @@
-import { createServer } from "node:http";
-import { once } from "node:events";
-import ky from "ky";
 import { describe, expect, it } from "vitest";
-import { createGooglePlacesMatcher } from "../../src/features/places/google";
-import type { MatchPlace } from "../../src/features/places/google";
-
-const mention = {
-  name: "Cafe Test",
-  city: "Berlin",
-  country: "Germany",
-  evidence: "Cafe Test in Berlin, Germany",
-};
-function place(id = "place-1", name = "Cafe Test", city = "Berlin") {
-  return {
-    id,
-    displayName: { text: name },
-    formattedAddress: `Test Street, ${city}, Germany`,
-    location: { latitude: 52.52, longitude: 13.405 },
-    addressComponents: [
-      { longText: city, types: ["locality"] },
-      { longText: "Germany", shortText: "DE", types: ["country"] },
-    ],
-    photos: [],
-  };
-}
-
-type ObservedRequest = {
-  readonly path: string | undefined;
-  readonly key: string | string[] | undefined;
-  readonly mask: string | string[] | undefined;
-  readonly body: unknown;
-};
-async function withPlaces(
-  search: unknown,
-  run: (match: MatchPlace, requests: ObservedRequest[]) => Promise<void>,
-  options: {
-    readonly status?: number;
-    readonly photo?: unknown;
-    readonly photoStatus?: number;
-  } = {},
-) {
-  const requests: ObservedRequest[] = [];
-  const server = createServer(async (request, reply) => {
-    const chunks: Buffer[] = [];
-    for await (const chunk of request) chunks.push(Buffer.from(chunk));
-    const body = Buffer.concat(chunks).toString("utf8");
-    requests.push({
-      path: request.url,
-      key: request.headers["x-goog-api-key"],
-      mask: request.headers["x-goog-fieldmask"],
-      body: body ? JSON.parse(body) : undefined,
-    });
-    const photo = request.method === "GET";
-    reply.writeHead(
-      photo ? (options.photoStatus ?? 200) : (options.status ?? 200),
-      { "Content-Type": "application/json" },
-    );
-    reply.end(JSON.stringify(photo ? options.photo : search));
-  });
-  const listening = once(server, "listening");
-  server.listen(0, "127.0.0.1");
-  await listening;
-  const address = server.address();
-  if (!address || typeof address === "string")
-    throw new TypeError("Expected TCP address");
-  const http = ky.create({
-    hooks: {
-      beforeRequest: [
-        ({ request }) => {
-          const url = new URL(request.url);
-          expect(url.origin).toBe("https://places.googleapis.com");
-          return new Request(
-            `http://127.0.0.1:${address.port}${url.pathname}${url.search}`,
-            request,
-          );
-        },
-      ],
-    },
-  });
-  try {
-    await run(
-      createGooglePlacesMatcher(
-        { GOOGLE_PLACES_API_KEY: "synthetic-google-key" },
-        http,
-      ),
-      requests,
-    );
-  } finally {
-    const closed = once(server, "close");
-    server.close();
-    server.closeAllConnections();
-    await closed;
-  }
-}
+import { mention, place, withPlaces } from "./google-fixtures";
 
 describe("Google Places matching", () => {
   it("omits an unsafe photo URI when the photo response contains a key", async () => {
@@ -109,8 +16,9 @@ describe("Google Places matching", () => {
       },
       async (match) => {
         const result = await match(mention);
-        expect(result.kind).toBe("matched");
-        if (result.kind !== "matched") throw new TypeError("Expected match");
+        expect(result.kind).toBe("no-photo");
+        if (result.kind !== "no-photo")
+          throw new TypeError("Expected photo fallback");
         expect(result.place.imageUrl).toBeUndefined();
       },
       {
@@ -122,7 +30,7 @@ describe("Google Places matching", () => {
     );
   });
 
-  it("omits photos requiring more author credit buttons than the card supports", async () => {
+  it("returns all credits when the first photo has multiple authors", async () => {
     const photo = {
       name: "places/place-1/photos/photo-1",
       authorAttributions: [
@@ -140,8 +48,14 @@ describe("Google Places matching", () => {
       { places: [{ ...place(), photos: [photo] }] },
       async (match, requests) => {
         const result = await match(mention);
-        expect(result.kind).toBe("matched");
-        expect(requests).toHaveLength(1);
+        expect(result).toMatchObject({
+          kind: "matched",
+          place: {
+            photoCredits: photo.authorAttributions,
+            imageUrl: "https://images.example.test/first.jpg",
+          },
+        });
+        expect(requests).toHaveLength(2);
       },
     );
   });
@@ -171,7 +85,7 @@ describe("Google Places matching", () => {
         key: "synthetic-google-key",
         body: {
           textQuery: "Cafe Test, Berlin, Germany",
-          pageSize: 5,
+          pageSize: 20,
           languageCode: "en",
         },
       });
@@ -192,13 +106,13 @@ describe("Google Places matching", () => {
     },
   );
 
-  it("assigns medium confidence when the name overlap is strong but not exact", async () => {
+  it("requires more evidence when the name overlap is strong but not exact", async () => {
     await withPlaces(
       { places: [place("a", "The Little Cafe Test Berlin")] },
       async (match) => {
         expect(
           await match({ ...mention, name: "Little Cafe Test Berlin" }),
-        ).toMatchObject({ kind: "matched", place: { confidence: "medium" } });
+        ).toEqual({ kind: "ambiguous" });
       },
     );
   });
@@ -272,7 +186,7 @@ describe("Google Places matching", () => {
   });
 
   it.each([403, 500])(
-    "retains a match without an image when the photo request fails with %s",
+    "returns a photo fallback when the first photo request fails with %s",
     async (photoStatus) => {
       await withPlaces(
         {
@@ -290,8 +204,9 @@ describe("Google Places matching", () => {
         },
         async (match) => {
           const result = await match(mention);
-          expect(result.kind).toBe("matched");
-          if (result.kind !== "matched") throw new TypeError("Expected match");
+          expect(result.kind).toBe("no-photo");
+          if (result.kind !== "no-photo")
+            throw new TypeError("Expected photo fallback");
           expect(result.place.imageUrl).toBeUndefined();
         },
         { photoStatus },
