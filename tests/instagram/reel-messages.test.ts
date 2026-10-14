@@ -173,7 +173,7 @@ describe("Instagram Reel replies", () => {
     await process(batch([event("photo")]), account, recorded.messenger);
     expect(recorded.cards[0]?.[0]).toMatchObject({
       image_url: "https://images.example.test/photo.jpg",
-      subtitle: "Google Maps · high confidence · Photo credit below",
+      subtitle: "Google Maps · Hong Kong",
       buttons: [
         {
           title: "Google Maps",

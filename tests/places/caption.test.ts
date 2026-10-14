@@ -94,3 +94,15 @@ describe("caption place extraction", () => {
     ]);
   });
 });
+
+describe("caption evidence", () => {
+  it("rejects an invented supporting quote", async () => {
+    const extract = createGeminiCaptionExtractor(
+      { GEMINI_API_KEY: "synthetic-key", GEMINI_MODEL: "synthetic-model" },
+      async () => extractionJson,
+    );
+    expect(await extract("A video with no named recommendations")).toEqual({
+      kind: "invalid-output",
+    });
+  });
+});

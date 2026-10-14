@@ -29,7 +29,7 @@ describe("confident place photo cards", () => {
         expect(requests).toHaveLength(2);
         expect(prepared.cards[0]?.element).toMatchObject({
           image_url: "https://images.example.test/first.jpg",
-          subtitle: "Google Maps · high confidence · Photo credits above",
+          subtitle: "Google Maps · Test Street, Berlin, Germany",
         });
         expect(prepared.cards[0]?.attributions).toEqual([
           "Photo of Cafe Test by A Photographer With A Long Display Name: https://maps.google.com/contrib/author",
@@ -91,30 +91,29 @@ describe("confident place photo cards", () => {
       },
       async (match, requests) => {
         const prepared = await preparePlaceCards(extraction, match);
-        expect(prepared.cards).toEqual([]);
-        expect(prepared.texts[0]).toContain(
-          "first Google photo is unavailable",
-        );
-        expect(prepared.texts[0]).toContain("query_place_id=place-1");
+        expect(prepared.cards).toHaveLength(1);
+        expect(prepared.cards[0]?.element.image_url).toBeUndefined();
+        expect(prepared.cards[0]?.fallback).toContain("query_place_id=place-1");
         expect(requests).toHaveLength(1);
       },
     );
   });
 
-  it("returns text Maps links when the first photo cannot be fetched instead of using a later photo", async () => {
+  it("keeps a Maps card when all available photos fail", async () => {
     await withPlaces(
       { places: [{ ...place(), photos: [firstPhoto, secondPhoto] }] },
       async (match, requests) => {
         const prepared = await preparePlaceCards(extraction, match);
-        expect(prepared.cards).toEqual([]);
-        expect(prepared.texts[0]).toContain(
+        expect(prepared.cards).toHaveLength(1);
+        expect(prepared.cards[0]?.element.image_url).toBeUndefined();
+        expect(prepared.cards[0]?.fallback).toContain(
           "Google Maps: https://www.google.com/maps/search/",
         );
-        expect(prepared.texts[0]).toContain(
+        expect(prepared.cards[0]?.fallback).toContain(
           "Apple Maps: https://maps.apple.com/",
         );
         expect(requests[1]?.path).toContain("/photos/first/media");
-        expect(requests).toHaveLength(2);
+        expect(requests).toHaveLength(3);
       },
       { photoStatus: 403 },
     );
@@ -157,6 +156,31 @@ describe("confident place photo cards", () => {
       { places: [place("place-1", "Test Cafe")] },
       async (match) => {
         expect(await match(mention)).toEqual({ kind: "ambiguous" });
+      },
+    );
+  });
+});
+
+describe("photo fallback within the selected place", () => {
+  it("uses the next photo of the same place when its first photo fails", async () => {
+    await withPlaces(
+      { places: [{ ...place(), photos: [firstPhoto, secondPhoto] }] },
+      async (match, requests) => {
+        const result = await match(mention);
+        expect(result).toMatchObject({
+          kind: "matched",
+          place: {
+            id: "place-1",
+            imageUrl: "https://images.example.test/second.jpg",
+          },
+        });
+        expect(requests[1]?.path).toContain("/photos/first/media");
+        expect(requests[2]?.path).toContain("/photos/second/media");
+        expect(requests).toHaveLength(3);
+      },
+      {
+        failedPhotoPaths: ["/v1/places/place-1/photos/first/media"],
+        photo: { photoUri: "https://images.example.test/second.jpg" },
       },
     );
   });

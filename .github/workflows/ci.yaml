@@ -35,7 +35,12 @@ jobs:
         run: npm ci
 
       - name: Check formatting
-        run: npm run format:check
+        run: |
+          npm run format:check || {
+            npx prettier --write src/features/places/google-model.ts src/features/places/google.ts src/features/instagram/place-cards.ts tests/places/google-matching-regressions.test.ts tests/places/google-fixtures.ts tests/places/google.test.ts tests/places/google-photos.test.ts tests/places/place-card-regressions.test.ts src/features/places/gemini.ts src/features/instagram/webhook.ts tests/places/caption.test.ts tests/instagram/reel-messages.test.ts docs/instagram-reel-capture.md
+            git diff
+            exit 1
+          }
 
       - name: Lint
         run: npm run lint

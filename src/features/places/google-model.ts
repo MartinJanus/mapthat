@@ -28,11 +28,11 @@ const attributionSchema = z
       .pipe(publicUrlSchema),
   })
   .readonly();
-const photoSchema = z.object({
-  name: z.string().regex(/^places\/[A-Za-z0-9_-]+\/photos\/[A-Za-z0-9_-]+$/),
+export const photoSchema = z.object({
+  name: z.string().regex(/^places\/[^/?#\s]+\/photos\/[^/?#\s]+$/),
   authorAttributions: z.array(attributionSchema).default([]),
 });
-const placeSchema = z.object({
+export const placeSchema = z.object({
   id: googlePlaceIdSchema,
   displayName: z.object({ text: z.string().min(1) }),
   formattedAddress: z.string().min(1),
@@ -47,7 +47,7 @@ const placeSchema = z.object({
       types: z.array(z.string()),
     }),
   ),
-  photos: z.array(photoSchema).default([]),
+  photos: z.array(z.unknown()).default([]),
   attributions: z
     .array(
       z.object({ provider: z.string().min(1), providerUri: publicUrlSchema }),
@@ -55,14 +55,14 @@ const placeSchema = z.object({
     .default([]),
 });
 export const searchSchema = z.object({
-  places: z.array(placeSchema).max(20).default([]),
+  places: z.array(z.unknown()).max(20).default([]),
 });
 export type GooglePlace = z.infer<typeof placeSchema>;
 export type MatchedPlace = {
   readonly id: GooglePlace["id"];
   readonly name: string;
   readonly address: string;
-  readonly confidence: "high";
+  readonly confidence: "high" | "medium";
   readonly links: PlaceSearchLinks;
   readonly imageUrl?: string;
   readonly photoCredit?: z.infer<typeof attributionSchema>;

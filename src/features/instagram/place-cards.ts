@@ -32,12 +32,8 @@ export async function preparePlaceCards(
     const result = await match(mention);
     switch (result.kind) {
       case "matched":
-        cards.push(buildMatchedCard(result.place));
-        break;
       case "no-photo":
-        texts.push(
-          `${result.place.name}: I matched this location, but its first Google photo is unavailable.\nGoogle Maps: ${result.place.links.googleMaps}\nApple Maps: ${result.place.links.appleMaps}${result.place.attributions.map((value) => `\n${value.provider}: ${value.providerUri}`).join("")}`,
-        );
+        cards.push(buildMatchedCard(result.place));
         break;
       case "ambiguous":
         texts.push(
@@ -64,39 +60,38 @@ export async function preparePlaceCards(
 }
 
 function buildMatchedCard(place: MatchedPlace): PlaceCard {
-  const label = `Google Maps · ${place.confidence} confidence`;
+  const label =
+    place.confidence === "medium"
+      ? "Google Maps · Likely match"
+      : "Google Maps";
   const card = buildCard(
     place.name,
     `${label} · ${place.address}`,
     place.links,
   );
-  const credit = place.photoCredit;
-  const credits = place.photoCredits ?? (credit ? [credit] : []);
-  const buttonCredit =
-    credits.length === 1 && credit && credit.displayName.length <= 20
-      ? credit
+  const credits =
+    place.photoCredits ?? (place.photoCredit ? [place.photoCredit] : []);
+  const credit =
+    credits.length === 1 && credits[0] && credits[0].displayName.length <= 20
+      ? credits[0]
       : undefined;
   return {
     element: {
       ...card.element,
       ...(place.imageUrl ? { image_url: place.imageUrl } : {}),
-      ...(credits.length
+      ...(credit
         ? {
-            subtitle: truncate(
-              `${label} · Photo credit${buttonCredit ? " below" : "s above"}`,
-              80,
-            ),
+            subtitle: truncate(`${label} · ${place.address}`, 80),
             buttons: [
               ...card.element.buttons,
-              ...(buttonCredit
-                ? [
-                    {
-                      type: "web_url" as const,
-                      title: buttonCredit.displayName,
-                      url: buttonCredit.uri,
-                    },
-                  ]
-                : []),
+              {
+                type: "web_url",
+                title:
+                  credit.displayName.length <= 20
+                    ? credit.displayName
+                    : "Photo credit",
+                url: credit.uri,
+              },
             ],
           }
         : {}),
@@ -106,12 +101,9 @@ function buildMatchedCard(place: MatchedPlace): PlaceCard {
       ...place.attributions.map(
         (value) => `${value.provider}: ${value.providerUri}`,
       ),
-      ...(!buttonCredit
-        ? credits.map(
-            (value) =>
-              `Photo of ${place.name} by ${value.displayName}: ${value.uri}`,
-          )
-        : []),
+      ...credits.map(
+        (value) => `Photo of ${place.name} by ${value.displayName}: ${value.uri}`,
+      ),
     ],
   };
 }

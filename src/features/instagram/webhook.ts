@@ -46,11 +46,11 @@ export function createWebhookHandlers(options: {
   const match =
     options.match ??
     (placesConfig.success
-      ? createGooglePlacesMatcher(placesConfig.data)
+      ? createGooglePlacesMatcher(placesConfig.data, undefined, { log })
       : undefined);
   const processReels = createReelMessageProcessor({
     cache: options.extractionCache ?? createFileExtractionCache(),
-    version: `caption-v1:${extractionConfig.success ? extractionConfig.data.GEMINI_MODEL : "default"}`,
+    version: `caption-v2:${extractionConfig.success ? extractionConfig.data.GEMINI_MODEL : "default"}`,
     onCacheError: () =>
       log({ event: "instagram.extraction_cache_failed", level: "warn" }),
     extract:
