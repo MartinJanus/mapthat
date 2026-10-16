@@ -11,6 +11,7 @@ import { createReelCapture } from "./reel-capture";
 import { createReelMessageProcessor } from "./reel-messages";
 import { geminiConfigSchema } from "../places/config";
 import { createGeminiCaptionExtractor } from "../places/gemini";
+import { geminiFailureDetails } from "../places/gemini-errors";
 import { createGeminiVideoExtractor } from "../places/video";
 import type { CaptionExtractionResult } from "../places/caption";
 import { createFileExtractionCache } from "../places/extraction-cache";
@@ -59,13 +60,24 @@ export function createWebhookHandlers(options: {
       options.extract ??
       (async (caption) => {
         const config = geminiConfigSchema.safeParse(options.environment());
-        if (!config.success)
+        if (!config.success) {
+          log({
+            event: "instagram.caption_extraction_failed",
+            level: "error",
+            reason: "configuration",
+            status: 0,
+          });
           return { kind: "invalid-output", reason: "configuration" };
+        }
         try {
           return await createGeminiCaptionExtractor(config.data)(caption);
         } catch (error) {
           if (!(error instanceof Error)) throw error;
-          log({ event: "instagram.caption_extraction_failed", level: "error" });
+          log({
+            event: "instagram.caption_extraction_failed",
+            level: "error",
+            ...geminiFailureDetails(error),
+          });
           return { kind: "invalid-output", reason: "provider" };
         }
       }),
