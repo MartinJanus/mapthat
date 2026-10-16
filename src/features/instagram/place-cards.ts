@@ -1,4 +1,9 @@
 import type { GenericElement } from "./client";
+import {
+  createDiagnosticLogger,
+  placeReference,
+} from "../observability/diagnostics";
+import type { DiagnosticLogger } from "../observability/diagnostics";
 import { createPlaceSearchLinks } from "../places/caption";
 import type { CaptionExtraction, PlaceSearchLinks } from "../places/caption";
 import type { MatchPlace, MatchedPlace } from "../places/google";
@@ -11,21 +16,36 @@ export type PlaceCard = {
 export async function preparePlaceCards(
   extraction: CaptionExtraction,
   match?: MatchPlace,
+  sink?: DiagnosticLogger,
 ) {
+  const log = createDiagnosticLogger(sink);
   const cards: PlaceCard[] = [];
-  for (const mention of extraction.mentions) {
-    const searchCard = (label: string) =>
-      buildCard(
+  for (const [index, mention] of extraction.mentions.entries()) {
+    const fields = { placeIndex: index + 1, placeRef: placeReference(mention) };
+    const searchCard = (label: string, reason: string) => {
+      log({
+        event: "instagram.place_card",
+        ...fields,
+        outcome: "search",
+        reason,
+        image: 0,
+      });
+      return buildCard(
         mention.name,
         [label, mention.city, mention.country].filter(Boolean).join(" · "),
         createPlaceSearchLinks(mention),
       );
+    };
     if (!mention.city && !mention.country) {
-      cards.push(searchCard("Location unclear · Search results"));
+      cards.push(
+        searchCard("Location unclear · Search results", "missing_geography"),
+      );
       continue;
     }
     if (!match) {
-      cards.push(searchCard("Caption candidate (not verified)"));
+      cards.push(
+        searchCard("Caption candidate (not verified)", "matcher_unconfigured"),
+      );
       continue;
     }
     const result = await match(mention);
@@ -33,17 +53,26 @@ export async function preparePlaceCards(
       case "matched":
       case "no-photo":
         cards.push(
-          buildMatchedCard(result.place) ?? searchCard("Search results"),
+          buildMatchedCard(result.place, (record) =>
+            log({ ...fields, ...record }),
+          ) ?? searchCard("Search results", "provider_credits_cannot_fit"),
         );
         break;
       case "ambiguous":
-        cards.push(searchCard("Possible locations · Search results"));
+        cards.push(
+          searchCard("Possible locations · Search results", "ambiguous"),
+        );
         break;
       case "not-found":
-        cards.push(searchCard("Search results · Not verified"));
+        cards.push(searchCard("Search results · Not verified", "not_found"));
         break;
       case "unavailable":
-        cards.push(searchCard("Search results · Matching unavailable"));
+        cards.push(
+          searchCard(
+            "Search results · Matching unavailable",
+            "matching_unavailable",
+          ),
+        );
         break;
       default: {
         const exhaustive: never = result;
@@ -54,7 +83,10 @@ export async function preparePlaceCards(
   return { cards, texts: [] as readonly string[] };
 }
 
-function buildMatchedCard(place: MatchedPlace): PlaceCard | undefined {
+function buildMatchedCard(
+  place: MatchedPlace,
+  log: DiagnosticLogger,
+): PlaceCard | undefined {
   const label =
     place.confidence === "possible"
       ? "Google Maps · Possible match · Check address"
@@ -71,6 +103,7 @@ function buildMatchedCard(place: MatchedPlace): PlaceCard | undefined {
   const credits =
     place.photoCredits ?? (place.photoCredit ? [place.photoCredit] : []);
   let imageUrl = place.imageUrl;
+  let imageReason = imageUrl ? "available" : "no_usable_photo";
   let photoTarget = place.photoSourceUrl;
   if (imageUrl && !photoTarget && credits.length) {
     const credit = credits.length === 1 ? credits[0] : undefined;
@@ -82,8 +115,16 @@ function buildMatchedCard(place: MatchedPlace): PlaceCard | undefined {
     } else {
       // Keep the place card if its photo credits cannot fit this UI.
       imageUrl = undefined;
+      imageReason = "photo_credits_cannot_fit";
     }
   }
+  log({
+    event: "instagram.place_card",
+    outcome: "location",
+    confidence: place.confidence,
+    image: imageUrl ? 1 : 0,
+    reason: imageReason,
+  });
   const card = buildCard(place.name, subtitle, place.links);
   return {
     element: {

@@ -1,3 +1,8 @@
+import { randomUUID } from "node:crypto";
+import {
+  createDiagnosticLogger,
+  withDiagnosticContext,
+} from "../observability/diagnostics";
 import { z } from "zod";
 import { instagramIdSchema } from "./config";
 import type { InstagramId } from "./config";
@@ -61,6 +66,7 @@ export function createReelMessageProcessor(
     readonly video?: ExtractVideo;
   },
 ) {
+  const log = createDiagnosticLogger(options.log);
   const now = options.now ?? Date.now;
   const attempts = new Map<string, number>();
   const extractReel = createCachedReelExtractor(options);
@@ -86,86 +92,144 @@ export function createReelMessageProcessor(
         const event = reelMessageSchema.safeParse(rawMessage);
         if (!event.success || !isIncomingReel(event.data, account, now())) {
           summary.ignored++;
+          log({
+            event: "instagram.reel_ignored",
+            reason: !event.success
+              ? "unsupported_event"
+              : "outgoing_or_outside_window",
+          });
           continue;
         }
-        const key = `${account}:${event.data.message.mid}`;
-        if (attempts.has(key)) {
-          summary.duplicate++;
-          continue;
-        }
-        attempts.set(key, now() + DEDUPLICATION_RETENTION_MS);
-        const recipient = event.data.sender.id;
+        await withDiagnosticContext({ reelId: randomUUID() }, async () => {
+          const key = `${account}:${event.data.message.mid}`;
+          if (attempts.has(key)) {
+            summary.duplicate++;
+            log({ event: "instagram.reel_ignored", reason: "duplicate" });
+            return;
+          }
+          attempts.set(key, now() + DEDUPLICATION_RETENTION_MS);
+          const recipient = event.data.sender.id;
 
-        if (typeof messenger !== "function") {
-          await messenger.reactToMessage(
-            event.data.sender.id,
-            event.data.message.mid,
-          );
-        }
-
-        const first = await sendText(
-          event.data.sender.id,
-          "Finding your locations…",
-        );
-        if (first.kind === "failed") {
-          summary.failed++;
-          continue;
-        }
-        summary.sent++;
-
-        const reel = event.data.message.attachments[0].payload;
-        const caption = reel.title
-          ? await extractReel(reel)
-          : { kind: "no-place" as const };
-        const { result, match } = await resolveReel(
-          reel,
-          caption,
-          options.match,
-          options.video,
-        );
-        if (result.kind === "extracted" && typeof messenger !== "function") {
-          const prepared = await preparePlaceCards(result.value, match);
-          for (const text of prepared.texts) await sendReply(text);
-          for (let offset = 0; offset < prepared.cards.length; offset += 10) {
-            const cards = prepared.cards.slice(offset, offset + 10);
-            const sent = await messenger.sendGenericTemplate(
+          if (typeof messenger !== "function") {
+            const reaction = await messenger.reactToMessage(
               event.data.sender.id,
-              cards.map((card) => card.element),
+              event.data.message.mid,
             );
-            switch (sent.kind) {
-              case "sent":
-                summary.sent++;
-                break;
-              case "failed":
-                summary.failed++;
-                for (const card of cards) await sendReply(card.fallback);
-                break;
-              default: {
-                const exhaustive: never = sent;
-                return exhaustive;
+            log({
+              event: "instagram.reply",
+              stage: "reaction",
+              outcome: reaction.kind,
+            });
+          }
+
+          const first = await sendText(
+            event.data.sender.id,
+            "Finding your locations…",
+          );
+          log({
+            event: "instagram.reply",
+            stage: "progress",
+            outcome: first.kind,
+          });
+          if (first.kind === "failed") {
+            summary.failed++;
+            return;
+          }
+          summary.sent++;
+
+          const reel = event.data.message.attachments[0].payload;
+          const extractionStarted = Date.now();
+          const caption = reel.title
+            ? await extractReel(reel)
+            : { kind: "no-place" as const };
+          log({
+            event: "instagram.caption_result",
+            outcome: caption.kind,
+            mentionCount:
+              caption.kind === "extracted" ? caption.value.mentions.length : 0,
+            captionPresent: reel.title ? 1 : 0,
+            reason:
+              caption.kind === "invalid-output"
+                ? (caption.reason ?? "invalid_output")
+                : "completed",
+            durationMs: Date.now() - extractionStarted,
+          });
+          const { result, match } = await resolveReel(
+            reel,
+            caption,
+            options.match,
+            options.video,
+            log,
+          );
+          if (result.kind === "extracted" && typeof messenger !== "function") {
+            const prepared = await preparePlaceCards(result.value, match, log);
+            log({
+              event: "instagram.cards_prepared",
+              cardCount: prepared.cards.length,
+              photoCount: prepared.cards.filter(
+                (card) => card.element.image_url,
+              ).length,
+            });
+            for (const text of prepared.texts) await sendReply(text);
+            for (let offset = 0; offset < prepared.cards.length; offset += 10) {
+              const cards = prepared.cards.slice(offset, offset + 10);
+              const sent = await messenger.sendGenericTemplate(
+                event.data.sender.id,
+                cards.map((card) => card.element),
+              );
+              log({
+                event: "instagram.reply",
+                stage: "carousel",
+                outcome: sent.kind,
+                cardCount: cards.length,
+                batchIndex: offset / 10 + 1,
+                reason: sent.kind === "failed" ? sent.reason : "completed",
+              });
+              switch (sent.kind) {
+                case "sent":
+                  summary.sent++;
+                  break;
+                case "failed":
+                  summary.failed++;
+                  for (const card of cards) await sendReply(card.fallback);
+                  break;
+                default: {
+                  const exhaustive: never = sent;
+                  return exhaustive;
+                }
               }
             }
+            return;
           }
-          continue;
-        }
-        for (const text of formatExtractionReply(result)) {
-          const sent = await sendText(event.data.sender.id, text);
-          if (sent.kind === "sent") summary.sent++;
-          else summary.failed++;
-        }
-
-        async function sendReply(text: string) {
-          let success = true;
-          for (const part of splitMessageText(text)) {
-            const sent = await sendText(recipient, part);
+          for (const text of formatExtractionReply(result)) {
+            const sent = await sendText(event.data.sender.id, text);
+            log({
+              event: "instagram.reply",
+              stage: "extraction_result",
+              outcome: sent.kind,
+            });
             if (sent.kind === "sent") summary.sent++;
-            else {
-              summary.failed++;
-              success = false;
-            }
+            else summary.failed++;
           }
-          return success;
-        }
+
+          async function sendReply(text: string) {
+            let success = true;
+            for (const part of splitMessageText(text)) {
+              const sent = await sendText(recipient, part);
+              log({
+                event: "instagram.reply",
+                stage: "text_fallback",
+                outcome: sent.kind,
+              });
+              if (sent.kind === "sent") summary.sent++;
+              else {
+                summary.failed++;
+                success = false;
+              }
+            }
+            return success;
+          }
+        });
       }
     }
     return summary;

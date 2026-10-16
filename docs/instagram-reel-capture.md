@@ -188,3 +188,56 @@ A possible caption match remains eligible for optional video refinement. Video
 can replace it with a better-supported match (including the same Google place
 ID); a failed video request leaves the possible card intact. Confirmed caption
 matches remain protected from replacement.
+
+## Reading pipeline diagnostics
+
+The first verified webhook handled by each server instance logs
+`instagram.pipeline` with version `possible-photos-diagnostics-v1`,
+configured-provider flags, a validated Gemini model ID, and whether video is
+enabled. If this marker is absent after restarting and sending a new Reel,
+check your branch and rebuild: `npm start` runs the previous production build.
+
+After testing or merging this PR, update the checkout, run `npm ci`, then
+`npm run build`, and restart with your usual host/port arguments. During
+development, `npm run dev` recompiles changes automatically.
+
+Each verified webhook has a random `requestId`; each accepted Reel has a
+random `reelId`. Async context keeps concurrent requests separate. A hashed
+`placeRef` ties matching/photo events to `instagram.place_card`, where
+`placeIndex` is the one-based position in the extraction/carousel sequence.
+
+Useful events:
+
+- `instagram.caption_cache`: hit, miss, bypass, coalesced work, or read/write
+  failures. A cache hit skips Gemini, not Google matching/photo loading.
+- `instagram.caption_result`: extraction outcome, mention count, elapsed time
+  and whether a caption was present.
+- `instagram.video_decision` / `instagram.video_result`: whether fallback ran,
+  why it was skipped, and its extraction outcome.
+- `places.search_result`: raw, valid and malformed candidate counts.
+- `places.match_decision`: valid/unique candidate counts, candidates surviving
+  geography and address checks, top/runner-up scores, score gap, thresholds, and
+  the reason for accepting/rejecting. `weak_name`, `geography_conflict`,
+  `address_conflict` and `missing_geography` remain search cards.
+  `competing_candidates` with `possibleEnabled:1` yields a possible-match card.
+- `places.photo_attempt` / `places.photo_result`: metadata absence, attempted
+  photo count, usable photo, or all photos failed. `places.request_failed`
+  gives the stage and safe HTTP/transport failure category.
+- `instagram.place_card`: card position, location/search outcome, confidence,
+  photo presence and render reason. `photo_credits_cannot_fit` means Google
+  supplied an image but the card could not represent its credits/source link.
+- `instagram.cards_prepared`: total card/photo counts.
+- `instagram.reply`: reaction, progress, carousel or text-fallback delivery,
+  including safe failure reason and carousel batch count.
+- `instagram.reel_ignored`: unsupported event (including non-Reel updates),
+  outgoing/out-of-window event, or a duplicate already handled in this process.
+
+`sent:2` usually means one progress message and one carousel/error reply; it
+does not measure extraction accuracy. Repeated ignored webhook updates do not
+mean Gemini was called repeatedly. Use caption/cache/video events to see paid work.
+
+Logs omit raw captions, venue names, addresses, message/account IDs, signed media
+URLs, photo URLs, keys and provider response bodies. They include only counts,
+scores, allowlisted categories and random/hashed correlation references. The new
+Gemini failure logger includes HTTP status, including `402/payment_required`.
+No database or external log sink is introduced by this change.

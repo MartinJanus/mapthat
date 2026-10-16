@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { randomUUID, createHmac, timingSafeEqual } from "node:crypto";
 import { verifyConfigSchema, webhookConfigSchema } from "./config";
 import { createInstagramSender, createInstagramMessenger } from "./client";
 import {
@@ -11,6 +11,11 @@ import { createReelCapture } from "./reel-capture";
 import { createReelMessageProcessor } from "./reel-messages";
 import { geminiConfigSchema } from "../places/config";
 import { createGeminiCaptionExtractor } from "../places/gemini";
+import { geminiFailureDetails } from "../places/gemini-errors";
+import {
+  createDiagnosticLogger,
+  withDiagnosticContext,
+} from "../observability/diagnostics";
 import { createGeminiVideoExtractor } from "../places/video";
 import type { CaptionExtractionResult } from "../places/caption";
 import { createFileExtractionCache } from "../places/extraction-cache";
@@ -36,10 +41,13 @@ export function createWebhookHandlers(options: {
   readonly captureReel?: ReturnType<typeof createReelCapture>;
   readonly log?: (record: Readonly<Record<string, string | number>>) => void;
 }) {
+  let configurationReported = false;
   const processMessages = options.processMessages ?? createMessageProcessor();
   const sender = options.sender ?? createInstagramSender;
   const captureReel = options.captureReel ?? createReelCapture();
-  const log = options.log ?? ((record) => console.info(JSON.stringify(record)));
+  const log = createDiagnosticLogger(
+    options.log ?? ((record) => console.info(JSON.stringify(record))),
+  );
   const environment = options.environment();
   const extractionConfig = geminiConfigSchema.safeParse(environment);
   const placesConfig = googlePlacesConfigSchema.safeParse(
@@ -51,6 +59,7 @@ export function createWebhookHandlers(options: {
       ? createGooglePlacesMatcher(placesConfig.data, undefined, { log })
       : undefined);
   const processReels = createReelMessageProcessor({
+    log,
     cache: options.extractionCache ?? createFileExtractionCache(),
     version: `caption-v3:${extractionConfig.success ? extractionConfig.data.GEMINI_MODEL : "default"}`,
     onCacheError: () =>
@@ -59,13 +68,24 @@ export function createWebhookHandlers(options: {
       options.extract ??
       (async (caption) => {
         const config = geminiConfigSchema.safeParse(options.environment());
-        if (!config.success)
+        if (!config.success) {
+          log({
+            event: "instagram.caption_extraction_failed",
+            level: "error",
+            reason: "configuration",
+            status: 0,
+          });
           return { kind: "invalid-output", reason: "configuration" };
+        }
         try {
           return await createGeminiCaptionExtractor(config.data)(caption);
         } catch (error) {
           if (!(error instanceof Error)) throw error;
-          log({ event: "instagram.caption_extraction_failed", level: "error" });
+          log({
+            event: "instagram.caption_extraction_failed",
+            level: "error",
+            ...geminiFailureDetails(error),
+          });
           return { kind: "invalid-output", reason: "provider" };
         }
       }),
@@ -139,38 +159,65 @@ export function createWebhookHandlers(options: {
       }
       const envelope = envelopeSchema.safeParse(input);
       if (!envelope.success) return reply("Invalid event envelope", 400);
-      try {
-        await captureReel(envelope.data, config.data);
-      } catch (error) {
-        if (!(error instanceof Error)) throw error;
-        log({ event: "instagram.reel_capture_failed", level: "error" });
-      }
-      try {
-        const reelSummary = await processReels(
+      return withDiagnosticContext({ requestId: randomUUID() }, async () => {
+        if (!configurationReported) {
+          configurationReported = true;
+          log({
+            event: "instagram.pipeline",
+            version: "possible-photos-diagnostics-v1",
+            possibleMatches: 1,
+            geminiConfigured: extractionConfig.success ? 1 : 0,
+            placesConfigured: placesConfig.success ? 1 : 0,
+            model:
+              extractionConfig.success &&
+              /^gemini-[a-z0-9.-]{1,80}$/.test(
+                extractionConfig.data.GEMINI_MODEL,
+              )
+                ? extractionConfig.data.GEMINI_MODEL
+                : "unconfigured_or_custom",
+            videoEnabled:
+              extractionConfig.success &&
+              typeof environment === "object" &&
+              environment !== null &&
+              (environment as Record<string, unknown>)
+                .INSTAGRAM_VIDEO_FALLBACK_ENABLED === "true"
+                ? 1
+                : 0,
+          });
+        }
+        try {
+          await captureReel(envelope.data, config.data);
+        } catch (error) {
+          if (!(error instanceof Error)) throw error;
+          log({ event: "instagram.reel_capture_failed", level: "error" });
+        }
+        try {
+          const reelSummary = await processReels(
+            envelope.data,
+            config.data.INSTAGRAM_ACCOUNT_ID,
+            (options.messenger ?? createInstagramMessenger)(config.data),
+          );
+          log({
+            event: "instagram.reels_processed",
+            level: reelSummary.failed ? "error" : "info",
+            ...reelSummary,
+          });
+        } catch (error) {
+          if (!(error instanceof Error)) throw error;
+          log({ event: "instagram.reel_processing_failed", level: "error" });
+        }
+        const summary = await processMessages(
           envelope.data,
           config.data.INSTAGRAM_ACCOUNT_ID,
-          (options.messenger ?? createInstagramMessenger)(config.data),
+          sender(config.data),
         );
         log({
-          event: "instagram.reels_processed",
-          level: reelSummary.failed ? "error" : "info",
-          ...reelSummary,
+          event: "instagram.batch_processed",
+          level: summary.failed ? "error" : "info",
+          ...summary,
         });
-      } catch (error) {
-        if (!(error instanceof Error)) throw error;
-        log({ event: "instagram.reel_processing_failed", level: "error" });
-      }
-      const summary = await processMessages(
-        envelope.data,
-        config.data.INSTAGRAM_ACCOUNT_ID,
-        sender(config.data),
-      );
-      log({
-        event: "instagram.batch_processed",
-        level: summary.failed ? "error" : "info",
-        ...summary,
+        return reply("EVENT_RECEIVED", summary.capacity ? 503 : 200);
       });
-      return reply("EVENT_RECEIVED", summary.capacity ? 503 : 200);
     },
   };
 }

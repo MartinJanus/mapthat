@@ -107,12 +107,14 @@ describe("contextual matching regressions", () => {
       },
       { status: 403, log: (record) => records.push(record) },
     );
-    expect(records).toContainEqual({
-      event: "places.request_failed",
-      stage: "search",
-      reason: "http",
-      status: 403,
-    });
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        event: "places.request_failed",
+        stage: "search",
+        reason: "http",
+        status: 403,
+      }),
+    );
     expect(JSON.stringify(records)).not.toContain("synthetic-google-key");
     expect(JSON.stringify(records)).not.toContain("secret provider response");
   });

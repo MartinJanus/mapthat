@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { createWebhookHandlers } from "../../src/features/instagram/webhook";
 import { createInstagramMessenger } from "../../src/features/instagram/client";
 import { googlePlaceIdSchema } from "../../src/features/places/google";
+import type { DiagnosticRecord } from "../../src/features/observability/diagnostics";
 
 const environment = {
   INSTAGRAM_APP_SECRET: "synthetic-secret",
@@ -50,6 +51,7 @@ describe("signed Reel webhook to Instagram cards", () => {
         request.url = `http://127.0.0.1:${address.port}${url.pathname}`;
         return request;
       });
+      const logs: DiagnosticRecord[] = [];
       const handlers = createWebhookHandlers({
         environment: () => environment,
         captureReel: async () => {},
@@ -91,7 +93,7 @@ describe("signed Reel webhook to Instagram cards", () => {
             ],
           },
         }),
-        log: () => {},
+        log: (record) => logs.push(record),
       });
       const body = JSON.stringify({
         object: "instagram",
@@ -127,6 +129,32 @@ describe("signed Reel webhook to Instagram cards", () => {
           }),
         );
         expect(response.status).toBe(200);
+        const pipeline = logs.find(
+          (record) => record.event === "instagram.pipeline",
+        );
+        expect(pipeline).toMatchObject({
+          version: "possible-photos-diagnostics-v1",
+          possibleMatches: 1,
+        });
+        const cardLog = logs.find(
+          (record) => record.event === "instagram.place_card",
+        );
+        expect(cardLog).toMatchObject({
+          requestId: pipeline?.requestId,
+          placeIndex: 1,
+          outcome: "location",
+          image: 1,
+        });
+        expect(typeof cardLog?.reelId).toBe("string");
+        const reelLogs = logs.filter((record) => record.reelId);
+        expect(reelLogs.length).toBeGreaterThan(3);
+        expect(new Set(reelLogs.map((record) => record.reelId)).size).toBe(1);
+        expect(new Set(reelLogs.map((record) => record.requestId)).size).toBe(
+          1,
+        );
+        expect(JSON.stringify(logs)).not.toMatch(
+          /synthetic-secret|synthetic-token|Cafe Test|incoming-reel|https:/,
+        );
         expect(requests[0]).toMatchObject({
           sender_action: "react",
           payload: { message_id: "incoming-reel", reaction: "👀" },

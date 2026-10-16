@@ -1,3 +1,5 @@
+import { createDiagnosticLogger } from "../observability/diagnostics";
+import type { DiagnosticLogger } from "../observability/diagnostics";
 import type { CaptionExtractionResult, PlaceMention } from "../places/caption";
 import type { MatchPlace, PlaceMatchResult } from "../places/google";
 import type { ExtractVideo } from "../places/video";
@@ -9,16 +11,28 @@ export async function resolveReel(
   caption: CaptionExtractionResult,
   match?: MatchPlace,
   video?: ExtractVideo,
+  sink?: DiagnosticLogger,
 ): Promise<{
   readonly result: CaptionExtractionResult;
   readonly match?: MatchPlace;
 }> {
+  const log = createDiagnosticLogger(sink);
   if (
     !match ||
     !video ||
     (caption.kind === "invalid-output" && caption.reason !== "ungrounded")
-  )
+  ) {
+    log({
+      event: "instagram.video_decision",
+      outcome: "skipped",
+      reason: !match
+        ? "matcher_unconfigured"
+        : !video
+          ? "video_unconfigured"
+          : "caption_provider_failure",
+    });
     return { result: caption, match };
+  }
   const results = new Map<string, PlaceMatchResult>();
   const key = (mention: PlaceMention) => JSON.stringify(mention);
   const memoized: MatchPlace = async (mention) => {
@@ -40,14 +54,37 @@ export async function resolveReel(
     )
       unresolved.push(mention);
   }
-  if (original.length && !unresolved.length)
+  if (original.length && !unresolved.length) {
+    log({
+      event: "instagram.video_decision",
+      outcome: "skipped",
+      reason: "no_unresolved_places",
+    });
     return { result: caption, match: memoized };
+  }
+  log({
+    event: "instagram.video_decision",
+    outcome: "attempted",
+    reason: original.length ? "unresolved_places" : "no_caption_places",
+    unresolvedCount: unresolved.length,
+  });
   let fallback;
   try {
     fallback = await video({ url: reel.url, caption: reel.title, unresolved });
   } catch {
+    log({
+      event: "instagram.video_result",
+      outcome: "unavailable",
+      reason: "unexpected_failure",
+    });
     return { result: caption, match: memoized };
   }
+  log({
+    event: "instagram.video_result",
+    outcome: fallback.kind,
+    mentionCount:
+      fallback.kind === "extracted" ? fallback.value.mentions.length : 0,
+  });
   if (fallback.kind !== "extracted")
     return { result: caption, match: memoized };
   const merged = [...original];
