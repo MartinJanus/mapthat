@@ -82,6 +82,13 @@ describe("signed Reel webhook to Instagram cards", () => {
                 "https://maps.apple.com/?q=52.52,13.405&ll=52.52,13.405",
             },
             imageUrl: "https://images.example.test/photo.jpg",
+            photoSourceUrl: "https://maps.google.com/maps/photo/first",
+            photoCredits: [
+              {
+                displayName: "Photo Author",
+                uri: "https://maps.google.com/contrib/author",
+              },
+            ],
           },
         }),
         log: () => {},
@@ -132,6 +139,10 @@ describe("signed Reel webhook to Instagram cards", () => {
                   {
                     title: "Cafe Test",
                     image_url: "https://images.example.test/photo.jpg",
+                    default_action: {
+                      type: "web_url",
+                      url: "https://maps.google.com/maps/photo/first",
+                    },
                     buttons: [
                       {
                         title: "Google Maps",

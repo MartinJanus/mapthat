@@ -128,16 +128,6 @@ export function createReelMessageProcessor(
           for (const text of prepared.texts) await sendReply(text);
           for (let offset = 0; offset < prepared.cards.length; offset += 10) {
             const cards = prepared.cards.slice(offset, offset + 10);
-            let creditsSent = true;
-            for (const card of cards) {
-              for (const credit of card.attributions) {
-                if (!(await sendReply(credit))) creditsSent = false;
-              }
-            }
-            if (!creditsSent) {
-              for (const card of cards) await sendReply(card.fallback);
-              continue;
-            }
             const sent = await messenger.sendGenericTemplate(
               event.data.sender.id,
               cards.map((card) => card.element),

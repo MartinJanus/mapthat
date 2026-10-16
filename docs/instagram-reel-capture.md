@@ -48,11 +48,16 @@ bumped so earlier results do not suppress this change.
 Matched Google Maps buttons use a place ID and coordinates; Apple Maps buttons
 use the same coordinates. Cards retain the address and identify Google Maps as
 the data source. Up to three photo resources are tried for an accepted place.
-Invalid optional photo metadata cannot discard a valid business. Every author
-is credited in full in text before the card; a third button links to a single author when their name fits. Multiple or long
-author names are credited in the preceding text without adding extra buttons.
-Multiple authors and long names no longer cause photos to be omitted. Photos
-that cannot be retrieved still yield a card without an image.
+Invalid optional photo metadata cannot discard a valid business. The carousel has exactly two visible buttons: Google Maps and Apple Maps.
+Separate author/profile text messages are no longer sent. When Google supplies
+the photo's `googleMapsUri`, tapping the card/image opens that individual source
+photo with its full author attribution. This uses Google's space-limited gallery
+attribution option. If only legacy author metadata exists, a single author's full
+name is kept compactly in the subtitle and the card tap links to their profile.
+If those credits cannot be represented, the verified place remains as a card
+without that photo. Photos that cannot be retrieved also yield a card without
+an image. Required provider names remain in the card; if they cannot fit,
+the result becomes a caption search card.
 
 API keys are sent in headers and never included in cards. Place search results
 and photo names are not cached or written to Reel captures. Server diagnostics
@@ -137,3 +142,24 @@ Smoke test after configuring keys:
 5. Inspect stage/outcome logs for API failures without exposing keys or media URLs.
 
 Reference: [Gemini video understanding](https://ai.google.dev/gemini-api/docs/video-understanding).
+
+## Carousel-only result presentation
+
+Every extracted recommendation stays in the carousel. Ambiguous, not-found,
+missing-geography and unavailable matches become explicitly labelled search cards
+with the caption's city/country included in the Maps queries. They have no
+invented coordinates, place ID or unrelated photo. Strong contextual matches
+continue to show the selected venue and photo; approximate accepted names retain
+the Likely match label. Matching thresholds are unchanged.
+
+The normal response is the progress message followed by one carousel per ten
+locations, with only Google Maps and Apple Maps buttons. Credits do not create
+separate URL-preview bubbles. Text fallback remains for failed template delivery.
+Real-account verification should check both map buttons, horizontal scrolling,
+and the photo/card tap opening the credited source on Google Maps.
+
+References:
+
+- [Google photo attribution and space-limited galleries](https://developers.google.com/maps/documentation/places/web-service/policies#photos_and_reviews)
+- [Google photo source URL](https://developers.google.com/maps/documentation/places/web-service/reference/rest/v1/places#Photo)
+- [Meta generic template default action](https://www.postman.com/meta/instagram/documentation/6yqw8pt/instagram-api)

@@ -173,7 +173,11 @@ describe("Instagram Reel replies", () => {
     await process(batch([event("photo")]), account, recorded.messenger);
     expect(recorded.cards[0]?.[0]).toMatchObject({
       image_url: "https://images.example.test/photo.jpg",
-      subtitle: "Google Maps · Hong Kong",
+      subtitle: "Google Maps · Hong Kong · Photo: Test Author",
+      default_action: {
+        type: "web_url",
+        url: "https://maps.google.com/contrib/test",
+      },
       buttons: [
         {
           title: "Google Maps",
@@ -183,7 +187,6 @@ describe("Instagram Reel replies", () => {
           title: "Apple Maps",
           url: "https://maps.apple.com/?q=22,114&ll=22,114",
         },
-        { title: "Test Author", url: "https://maps.google.com/contrib/test" },
       ],
     });
   });
@@ -207,7 +210,7 @@ describe("Instagram Reel replies", () => {
     expect(recorded.cards[0]).toHaveLength(1);
     expect(recorded.cards[0]?.[0]).toMatchObject({
       title: "Yat Lok Restaurant",
-      subtitle: "Caption candidate (not verified)",
+      subtitle: "Caption candidate (not verified) · Hong Kong · China",
       buttons: [
         {
           type: "web_url",
@@ -304,7 +307,7 @@ describe("Instagram Reel replies", () => {
   });
 
   it.each(["ambiguous", "not-found", "unavailable"] as const)(
-    "sends an explanation instead of a matched card when matching is %s",
+    "keeps an unverified search card when matching is %s",
     async (kind) => {
       const recorded = recordingMessenger();
       const process = createReelMessageProcessor({
@@ -313,10 +316,11 @@ describe("Instagram Reel replies", () => {
         match: async () => ({ kind }),
       });
       await process(batch([event("unmatched")]), account, recorded.messenger);
-      expect(recorded.cards).toEqual([]);
-      expect(recorded.texts).toHaveLength(2);
-      if (kind === "unavailable")
-        expect(recorded.texts[1]).toContain("not a verified location");
+      expect(recorded.cards[0]).toHaveLength(1);
+      expect(recorded.texts).toEqual(["Finding your locations…"]);
+      expect(recorded.cards[0]?.[0]?.subtitle).toContain("Search results");
+      expect(recorded.cards[0]?.[0]?.image_url).toBeUndefined();
+      expect(recorded.cards[0]?.[0]?.buttons).toHaveLength(2);
     },
   );
 

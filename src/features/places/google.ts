@@ -107,6 +107,7 @@ export function createGooglePlacesMatcher(
             place: {
               ...result.place,
               imageUrl,
+              photoSourceUrl: photo.data.googleMapsUri,
               photoCredit: photo.data.authorAttributions[0],
               photoCredits: photo.data.authorAttributions,
             },
