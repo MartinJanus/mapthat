@@ -407,3 +407,49 @@ describe("Instagram Reel replies", () => {
     expect(summary).toEqual({ sent: 0, failed: 0, ignored: 1, duplicate: 0 });
   });
 });
+
+describe("captionless media intake", () => {
+  it("passes a captionless Reel to video fallback and sends a verified photo card", async () => {
+    const recorded = recordingMessenger();
+    const incoming = event("captionless", "");
+    const payload: { title?: string; url?: string } =
+      incoming.message.attachments[0].payload;
+    delete payload.title;
+    payload.url = "https://video.cdninstagram.com/example.mp4";
+    let captionCalls = 0;
+    let videoCalls = 0;
+    const process = createReelMessageProcessor({
+      now: () => timestamp + 1000,
+      extract: async () => {
+        captionCalls++;
+        return { kind: "no-place" };
+      },
+      video: async (input) => {
+        videoCalls++;
+        expect(input.url).toBe(payload.url);
+        return extracted;
+      },
+      match: async () => ({
+        kind: "matched",
+        place: {
+          id: googlePlaceIdSchema.parse("verified"),
+          name: "Yat Lok Restaurant",
+          address: "Hong Kong",
+          confidence: "high",
+          links: {
+            googleMaps: "https://maps.google.com/?q=22,114",
+            appleMaps: "https://maps.apple.com/?q=22,114",
+          },
+          imageUrl: "https://images.example.test/verified.jpg",
+          attributions: [],
+        },
+      }),
+    });
+    await process(batch([incoming]), account, recorded.messenger);
+    expect(captionCalls).toBe(0);
+    expect(videoCalls).toBe(1);
+    expect(recorded.cards[0]?.[0]).toMatchObject({
+      image_url: "https://images.example.test/verified.jpg",
+    });
+  });
+});

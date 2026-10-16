@@ -103,6 +103,58 @@ describe("caption evidence", () => {
     );
     expect(await extract("A video with no named recommendations")).toEqual({
       kind: "invalid-output",
+      reason: "ungrounded",
+    });
+  });
+});
+
+describe("caption recovery", () => {
+  const config = { GEMINI_API_KEY: "synthetic", GEMINI_MODEL: "synthetic" };
+  const good = {
+    name: "Joe's Cafe",
+    evidence: "Joe's Cafe - great coffee",
+    city: "Berlin",
+    country: "Germany",
+  };
+  it("normalizes quote typography, dashes and whitespace without rejecting the caption", async () => {
+    const extract = createGeminiCaptionExtractor(config, async () =>
+      JSON.stringify({ mentions: [good] }),
+    );
+    expect((await extract("Joe’s Cafe –\n great coffee")).kind).toBe(
+      "extracted",
+    );
+  });
+  it("retains valid siblings when one item has an invalid schema or invented evidence", async () => {
+    const extract = createGeminiCaptionExtractor(config, async () =>
+      JSON.stringify({
+        mentions: [
+          good,
+          { name: "invalid" },
+          { ...good, name: "Invented", evidence: "Not actually present" },
+        ],
+      }),
+    );
+    expect(await extract(good.evidence)).toEqual({
+      kind: "extracted",
+      value: { mentions: [good] },
+    });
+  });
+  it("does not accept paraphrased or case-changed evidence", async () => {
+    const extract = createGeminiCaptionExtractor(config, async () =>
+      JSON.stringify({ mentions: [good] }),
+    );
+    expect(await extract("Joe's Cafe has great coffee")).toEqual({
+      kind: "invalid-output",
+      reason: "ungrounded",
+    });
+  });
+  it("drops an invented address hint while retaining a grounded recommendation", async () => {
+    const extract = createGeminiCaptionExtractor(config, async () =>
+      JSON.stringify({ mentions: [{ ...good, addressHint: "Fake Street" }] }),
+    );
+    expect(await extract(good.evidence)).toEqual({
+      kind: "extracted",
+      value: { mentions: [{ ...good, addressHint: null }] },
     });
   });
 });

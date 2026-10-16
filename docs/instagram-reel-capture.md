@@ -84,3 +84,56 @@ Provider references checked for this implementation:
 - [Google Text Search (New)](https://developers.google.com/maps/documentation/places/web-service/text-search)
 - [Google Place Photos (New)](https://developers.google.com/maps/documentation/places/web-service/place-photos)
 - [Google Places attributions](https://developers.google.com/maps/documentation/places/web-service/policies)
+
+## Caption-first extraction and optional video fallback
+
+Caption evidence tolerates Unicode quote/dash and whitespace differences.
+It does not accept paraphrases. Invalid or ungrounded items are removed individually
+so a bad sibling does not erase grounded recommendations. Grounded street/district
+quotes can narrow same-name branches; destination city/country must still agree
+with Google's address components. Missing context stays ambiguous.
+
+The caption cache is versioned as caption-v3. Only caption results are cached.
+Video evidence, Google results and photo URLs are not added to the disk cache.
+When enabled, fallback can still run after a cached caption result.
+
+Set `INSTAGRAM_VIDEO_FALLBACK_ENABLED=true` only after verifying that your
+app is permitted to retrieve and send the received media to Gemini. Default is
+false. This implementation does **not** prove that shared-Reel webhook URLs give
+your app video access. An Instagram permalink is not a media URL and is never
+scraped. A supported direct HTTPS Meta CDN URL in the attachment's `url` is
+required. Missing/expired/inaccessible media retains the caption results.
+
+Fallback runs once per processing attempt when the caption has no recommendations,
+has only ungrounded output, or leaves unmatched/ambiguous places. Caption provider
+or configuration failures and Places outages do not trigger paid video analysis.
+Successful caption matches are preserved. Every accepted video venue is matched
+against Google Places before it can become a photo card. Gemini's quotes and
+timestamps are structured evidence supplied by the model, not independently
+verified ground truth; visual appearance alone is excluded.
+
+Downloads allow only explicit Meta CDN hostnames, HTTPS, no credentials, no
+redirects, 10 seconds, 12 MiB (including streams without Content-Length), supported
+video MIME types and file signatures. Bytes stay in memory and go to Gemini as
+inline data. Analysis is limited to the first 180 seconds at 1 FPS; audio is
+included by Gemini's video processing. Gemini requests have a 30-second timeout.
+Signed media URLs, captions and provider errors are excluded from new diagnostics.
+Fallback logs record outcome, category and elapsed time, not billing totals.
+
+This remains a synchronous controlled-test prototype. Move extraction to the
+durable queue/worker before production deployment; timeout and retry handling
+must be designed there. A real-account test still needs to verify permitted media
+access, actual extraction accuracy, delivery timing and Instagram photo fetching.
+
+Smoke test after configuring keys:
+
+1. Send a caption with named places and a shared city: verify venue addresses,
+   Google place IDs, Apple coordinates and that photos depict the selected venue.
+2. Send two same-name branches, then a caption specifying a street: only the
+   street-supported branch should match.
+3. With fallback enabled and a permitted direct media URL, send a captionless Reel
+   naming a venue in speech/on-screen text. Verify its Google match and photo.
+4. Repeat with a permalink/expired URL: grounded caption results must survive.
+5. Inspect stage/outcome logs for API failures without exposing keys or media URLs.
+
+Reference: [Gemini video understanding](https://ai.google.dev/gemini-api/docs/video-understanding).

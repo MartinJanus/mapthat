@@ -8,6 +8,7 @@ export const placeMentionSchema = z
     evidence: z.string().trim().min(1).max(500),
     city: optionalLocationSchema,
     country: optionalLocationSchema,
+    addressHint: optionalLocationSchema.optional(),
   })
   .strict()
   .readonly();
@@ -26,7 +27,10 @@ export type CaptionExtraction = z.infer<typeof captionExtractionSchema>;
 export type CaptionExtractionResult =
   | { readonly kind: "extracted"; readonly value: CaptionExtraction }
   | { readonly kind: "no-place" }
-  | { readonly kind: "invalid-output" };
+  | {
+      readonly kind: "invalid-output";
+      readonly reason?: "ungrounded" | "provider" | "configuration";
+    };
 
 export type PlaceSearchLinks = {
   readonly appleMaps: string;
@@ -50,11 +54,19 @@ export function parseCaptionExtraction(value: string): CaptionExtractionResult {
     throw error;
   }
 
-  const parsed = captionExtractionSchema.safeParse(input);
-  if (!parsed.success) return { kind: "invalid-output" };
-  return parsed.data.mentions.length === 0
-    ? { kind: "no-place" }
-    : { kind: "extracted", value: parsed.data };
+  const envelope = z
+    .object({ mentions: z.array(z.unknown()).max(30) })
+    .strict()
+    .safeParse(input);
+  if (!envelope.success) return { kind: "invalid-output" };
+  if (envelope.data.mentions.length === 0) return { kind: "no-place" };
+  const mentions = envelope.data.mentions.flatMap((raw) => {
+    const mention = placeMentionSchema.safeParse(raw);
+    return mention.success ? [mention.data] : [];
+  });
+  return mentions.length
+    ? { kind: "extracted", value: { mentions } }
+    : { kind: "invalid-output" };
 }
 
 export function prepareCaptionPlaceResults(

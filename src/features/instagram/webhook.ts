@@ -11,6 +11,7 @@ import { createReelCapture } from "./reel-capture";
 import { createReelMessageProcessor } from "./reel-messages";
 import { geminiConfigSchema } from "../places/config";
 import { createGeminiCaptionExtractor } from "../places/gemini";
+import { createGeminiVideoExtractor } from "../places/video";
 import type { CaptionExtractionResult } from "../places/caption";
 import { createFileExtractionCache } from "../places/extraction-cache";
 import type { ReelExtractionCache } from "../places/extraction-cache";
@@ -39,7 +40,8 @@ export function createWebhookHandlers(options: {
   const sender = options.sender ?? createInstagramSender;
   const captureReel = options.captureReel ?? createReelCapture();
   const log = options.log ?? ((record) => console.info(JSON.stringify(record)));
-  const extractionConfig = geminiConfigSchema.safeParse(options.environment());
+  const environment = options.environment();
+  const extractionConfig = geminiConfigSchema.safeParse(environment);
   const placesConfig = googlePlacesConfigSchema.safeParse(
     options.environment(),
   );
@@ -50,23 +52,32 @@ export function createWebhookHandlers(options: {
       : undefined);
   const processReels = createReelMessageProcessor({
     cache: options.extractionCache ?? createFileExtractionCache(),
-    version: `caption-v2:${extractionConfig.success ? extractionConfig.data.GEMINI_MODEL : "default"}`,
+    version: `caption-v3:${extractionConfig.success ? extractionConfig.data.GEMINI_MODEL : "default"}`,
     onCacheError: () =>
       log({ event: "instagram.extraction_cache_failed", level: "warn" }),
     extract:
       options.extract ??
       (async (caption) => {
         const config = geminiConfigSchema.safeParse(options.environment());
-        if (!config.success) return { kind: "invalid-output" };
+        if (!config.success)
+          return { kind: "invalid-output", reason: "configuration" };
         try {
           return await createGeminiCaptionExtractor(config.data)(caption);
         } catch (error) {
           if (!(error instanceof Error)) throw error;
           log({ event: "instagram.caption_extraction_failed", level: "error" });
-          return { kind: "invalid-output" };
+          return { kind: "invalid-output", reason: "provider" };
         }
       }),
     match,
+    video:
+      extractionConfig.success &&
+      typeof environment === "object" &&
+      environment !== null &&
+      (environment as Record<string, unknown>)
+        .INSTAGRAM_VIDEO_FALLBACK_ENABLED === "true"
+        ? createGeminiVideoExtractor(extractionConfig.data, { log })
+        : undefined,
   });
   const reply = (body: string, status: number) =>
     new Response(body, {
