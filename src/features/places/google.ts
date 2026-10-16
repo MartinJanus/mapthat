@@ -50,7 +50,12 @@ export function createGooglePlacesMatcher(
               "places.id,places.displayName,places.formattedAddress,places.location,places.addressComponents,places.photos,places.attributions",
           },
           json: {
-            textQuery: [searchName(mention), mention.city, mention.country]
+            textQuery: [
+              searchName(mention),
+              mention.addressHint,
+              mention.city,
+              mention.country,
+            ]
               .filter(Boolean)
               .join(", "),
             pageSize: 20,
@@ -170,6 +175,13 @@ export function selectPlaceMatch(
   ];
   const ranked = unique
     .filter((place) => geographicMatch(mention, place))
+    .filter(
+      (place) =>
+        !mention.addressHint ||
+        normalize(place.formattedAddress).includes(
+          normalize(mention.addressHint),
+        ),
+    )
     .map((place) => ({
       place,
       score: nameScore(searchName(mention), place.displayName.text),

@@ -8,6 +8,8 @@ import type { envelopeSchema } from "./messages";
 import { prepareCaptionPlaceResults } from "../places/caption";
 import type { CaptionExtractionResult } from "../places/caption";
 import { createCachedReelExtractor } from "./cached-reel-extractor";
+import { resolveReel } from "./resolve-reel";
+import type { ExtractVideo } from "../places/video";
 
 const entrySchema = z.object({
   id: instagramIdSchema,
@@ -19,16 +21,22 @@ const reelMessageSchema = z.object({
   timestamp: z.number().int().nonnegative(),
   message: z.object({
     mid: z.string().min(1),
-    attachments: z.array(
-      z.object({
-        type: z.literal("ig_reel"),
-        payload: z.object({
-          title: z.string().trim().min(1),
-          reel_video_id: z.string().regex(/^\d+$/).optional().catch(undefined),
-          url: z.string().optional().catch(undefined),
+    attachments: z
+      .array(
+        z.object({
+          type: z.literal("ig_reel"),
+          payload: z.object({
+            title: z.string().trim().default(""),
+            reel_video_id: z
+              .string()
+              .regex(/^\d+$/)
+              .optional()
+              .catch(undefined),
+            url: z.string().optional().catch(undefined),
+          }),
         }),
-      }),
-    ),
+      )
+      .min(1),
     is_echo: z.boolean().optional(),
     is_self: z.boolean().optional(),
     is_deleted: z.boolean().optional(),
@@ -50,6 +58,7 @@ export function createReelMessageProcessor(
     readonly now?: () => number;
     readonly extract: (caption: string) => Promise<CaptionExtractionResult>;
     readonly match?: MatchPlace;
+    readonly video?: ExtractVideo;
   },
 ) {
   const now = options.now ?? Date.now;
@@ -104,11 +113,18 @@ export function createReelMessageProcessor(
         }
         summary.sent++;
 
-        const result = await extractReel(
-          event.data.message.attachments[0].payload,
+        const reel = event.data.message.attachments[0].payload;
+        const caption = reel.title
+          ? await extractReel(reel)
+          : { kind: "no-place" as const };
+        const { result, match } = await resolveReel(
+          reel,
+          caption,
+          options.match,
+          options.video,
         );
         if (result.kind === "extracted" && typeof messenger !== "function") {
-          const prepared = await preparePlaceCards(result.value, options.match);
+          const prepared = await preparePlaceCards(result.value, match);
           for (const text of prepared.texts) await sendReply(text);
           for (let offset = 0; offset < prepared.cards.length; offset += 10) {
             const cards = prepared.cards.slice(offset, offset + 10);
@@ -200,7 +216,9 @@ function formatExtractionReply(
       return ["I couldn't find a place recommendation in that Reel's caption."];
     case "invalid-output":
       return [
-        "I couldn't read the places in that Reel's caption. Please try another Reel.",
+        result.reason === "provider" || result.reason === "configuration"
+          ? "Place extraction is temporarily unavailable. Please try again later."
+          : "I couldn't confidently read the places in this Reel. Send the place name and city, or try another Reel.",
       ];
     case "extracted":
       return formatPlaceResults(prepareCaptionPlaceResults(result.value));
