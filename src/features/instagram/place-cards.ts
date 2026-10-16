@@ -56,9 +56,11 @@ export async function preparePlaceCards(
 
 function buildMatchedCard(place: MatchedPlace): PlaceCard | undefined {
   const label =
-    place.confidence === "medium"
-      ? "Google Maps · Likely match"
-      : "Google Maps";
+    place.confidence === "possible"
+      ? "Google Maps · Possible match · Check address"
+      : place.confidence === "medium"
+        ? "Google Maps · Likely match"
+        : "Google Maps";
   const providerNames = [
     ...new Set(place.attributions.map((value) => value.provider)),
   ];

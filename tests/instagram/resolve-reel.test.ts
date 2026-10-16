@@ -117,3 +117,47 @@ describe("caption-first resolution", () => {
     ).toEqual({ kind: "ambiguous" });
   });
 });
+
+describe("possible-match refinement", () => {
+  it("uses video evidence to upgrade a possible match to the same confirmed place", async () => {
+    if (matched.kind !== "matched") throw new Error("Expected fixture match");
+    const possible = {
+      ...matched,
+      place: { ...matched.place, confidence: "possible" as const },
+    };
+    const enriched = { ...mention, addressHint: "Main Street" };
+    const match = vi
+      .fn<MatchPlace>()
+      .mockImplementation(async (value) =>
+        value.addressHint ? matched : possible,
+      );
+    const video = vi.fn().mockResolvedValue({
+      kind: "extracted",
+      value: { mentions: [enriched] },
+    });
+    const resolved = await resolveReel(reel, extracted, match, video);
+    expect(video).toHaveBeenCalledOnce();
+    expect(resolved.result).toEqual({
+      kind: "extracted",
+      value: { mentions: [enriched] },
+    });
+    expect(await resolved.match?.(enriched)).toEqual(matched);
+    expect(match).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the suggested photo candidate if video is unavailable", async () => {
+    if (matched.kind !== "matched") throw new Error("Expected fixture match");
+    const possible = {
+      ...matched,
+      place: { ...matched.place, confidence: "possible" as const },
+    };
+    const resolved = await resolveReel(
+      reel,
+      extracted,
+      async () => possible,
+      async () => ({ kind: "unavailable" }),
+    );
+    expect(resolved.result).toEqual(extracted);
+    expect(await resolved.match?.(mention)).toEqual(possible);
+  });
+});

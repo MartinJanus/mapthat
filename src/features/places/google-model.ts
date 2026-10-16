@@ -63,7 +63,7 @@ export type MatchedPlace = {
   readonly id: GooglePlace["id"];
   readonly name: string;
   readonly address: string;
-  readonly confidence: "high" | "medium";
+  readonly confidence: "high" | "medium" | "possible";
   readonly links: PlaceSearchLinks;
   readonly imageUrl?: string;
   readonly photoSourceUrl?: string;

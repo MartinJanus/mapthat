@@ -32,7 +32,12 @@ export async function resolveReel(
   const unresolved: PlaceMention[] = [];
   for (const mention of original) {
     const result = await memoized(mention);
-    if (result.kind === "ambiguous" || result.kind === "not-found")
+    if (
+      result.kind === "ambiguous" ||
+      result.kind === "not-found" ||
+      ((result.kind === "matched" || result.kind === "no-photo") &&
+        result.place.confidence === "possible")
+    )
       unresolved.push(mention);
   }
   if (original.length && !unresolved.length)
@@ -53,7 +58,10 @@ export async function resolveReel(
       .replace(/[^\p{L}\p{N}]/gu, "");
   const resolvedIds = new Set<string>();
   for (const result of results.values())
-    if (result.kind === "matched" || result.kind === "no-photo")
+    if (
+      (result.kind === "matched" || result.kind === "no-photo") &&
+      result.place.confidence !== "possible"
+    )
       resolvedIds.add(result.place.id);
   for (const mention of fallback.value.mentions) {
     const result = await memoized(mention);

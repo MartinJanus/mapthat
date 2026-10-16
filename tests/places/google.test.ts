@@ -94,11 +94,10 @@ describe("Google Places matching", () => {
   });
 
   it.each([
-    { places: [place("a"), place("b")] },
     { places: [place("a", "Cafe Test", "Munich")] },
     { places: [place("a", "Different Restaurant")] },
   ])(
-    "does not select a location when the candidates are ambiguous or contradict the caption",
+    "does not select a location when candidates contradict the caption",
     async (search) => {
       await withPlaces(search, async (match) => {
         expect(await match(mention)).toEqual({ kind: "ambiguous" });

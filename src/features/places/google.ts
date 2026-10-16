@@ -90,7 +90,7 @@ export function createGooglePlacesMatcher(
         diagnostic("search", "response_schema");
         return { kind: "unavailable" };
       }
-      const result = selectPlaceMatch(mention, places);
+      const result = selectPlaceMatch(mention, places, { allowPossible: true });
       if (result.kind !== "matched") return result;
       const selected = places.find((place) => place.id === result.place.id);
       // Invalid optional photo metadata must not discard a valid place.
@@ -168,6 +168,7 @@ export function createGooglePlacesMatcher(
 export function selectPlaceMatch(
   mention: PlaceMention,
   places: readonly GooglePlace[],
+  options: { readonly allowPossible?: boolean } = {},
 ): PlaceMatchResult {
   if (places.length === 0) return { kind: "not-found" };
   if (!mention.city && !mention.country) return { kind: "ambiguous" };
@@ -190,12 +191,9 @@ export function selectPlaceMatch(
     .sort((a, b) => b.score - a.score);
   const first = ranked[0];
   const second = ranked[1];
-  if (
-    !first ||
-    first.score < 0.8 ||
-    (second && first.score - second.score < 0.2)
-  )
-    return { kind: "ambiguous" };
+  if (!first || first.score < 0.8) return { kind: "ambiguous" };
+  const uncertain = Boolean(second && first.score - second.score < 0.2);
+  if (uncertain && !options.allowPossible) return { kind: "ambiguous" };
   const query = `${first.place.location.latitude},${first.place.location.longitude}`;
   return {
     kind: "matched",
@@ -203,8 +201,9 @@ export function selectPlaceMatch(
       id: first.place.id,
       name: first.place.displayName.text,
       address: first.place.formattedAddress,
-      confidence:
-        normalize(mention.name) === normalize(first.place.displayName.text)
+      confidence: uncertain
+        ? "possible"
+        : normalize(mention.name) === normalize(first.place.displayName.text)
           ? "high"
           : "medium",
       links: {

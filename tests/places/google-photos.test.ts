@@ -79,7 +79,10 @@ describe("confident place photo cards", () => {
     await withPlaces(
       { places: [{ ...place("a"), photos: [] }, place("b")] },
       async (match, requests) => {
-        expect(await match(mention)).toEqual({ kind: "ambiguous" });
+        expect(await match(mention)).toMatchObject({
+          kind: "no-photo",
+          place: { id: "a", confidence: "possible" },
+        });
         expect(requests).toHaveLength(1);
       },
     );
@@ -123,7 +126,7 @@ describe("confident place photo cards", () => {
     );
   });
 
-  it("requires stronger evidence when a nearly identical competing name exists", async () => {
+  it("marks a close competing name as possible and loads its own photo", async () => {
     await withPlaces(
       {
         places: [
@@ -134,8 +137,12 @@ describe("confident place photo cards", () => {
       async (match, requests) => {
         expect(
           await match({ ...mention, name: "Little Cafe Test Berlin" }),
-        ).toEqual({ kind: "ambiguous" });
-        expect(requests).toHaveLength(1);
+        ).toMatchObject({
+          kind: "matched",
+          place: { id: "a", confidence: "possible" },
+        });
+        expect(requests[1]?.path).toContain("/places/a/photos/");
+        expect(requests).toHaveLength(2);
       },
     );
   });
@@ -186,6 +193,59 @@ describe("photo fallback within the selected place", () => {
         failedPhotoPaths: ["/v1/places/place-1/photos/first/media"],
         photo: { photoUri: "https://images.example.test/second.jpg" },
       },
+    );
+  });
+});
+
+describe("possible location photo cards", () => {
+  it("keeps the candidate photo, address and both links together", async () => {
+    await withPlaces(
+      {
+        places: [
+          {
+            ...place("candidate-a"),
+            formattedAddress: "1 Main Street, Berlin",
+          },
+          {
+            ...place("candidate-b"),
+            formattedAddress: "9 Other Street, Berlin",
+            location: { latitude: 52.6, longitude: 13.5 },
+          },
+        ],
+      },
+      async (match, requests) => {
+        const prepared = await preparePlaceCards(extraction, match);
+        const card = prepared.cards[0].element;
+        expect(card.subtitle).toContain("Possible match · Check address");
+        expect(card.subtitle).toContain("1 Main Street");
+        expect(card.image_url).toBe("https://images.example.test/first.jpg");
+        expect(card.buttons.map((button) => button.title)).toEqual([
+          "Google Maps",
+          "Apple Maps",
+        ]);
+        const google = new URL(card.buttons[0].url);
+        const apple = new URL(card.buttons[1].url);
+        expect(google.searchParams.get("query_place_id")).toBe("candidate-a");
+        expect(google.searchParams.get("query")).toBe("52.52,13.405");
+        expect(apple.searchParams.get("ll")).toBe("52.52,13.405");
+        expect(requests[1].path).toContain("/places/candidate-a/photos/");
+        expect(requests).toHaveLength(2);
+        expect(prepared.texts).toEqual([]);
+        expect(prepared.cards[0].fallback).toContain("Possible match");
+      },
+    );
+  });
+
+  it("retains the possible-match warning when the selected photo fails", async () => {
+    await withPlaces(
+      { places: [place("a"), place("b")] },
+      async (match) => {
+        const prepared = await preparePlaceCards(extraction, match);
+        expect(prepared.cards[0].element.subtitle).toContain("Possible match");
+        expect(prepared.cards[0].element.image_url).toBeUndefined();
+        expect(prepared.cards[0].element.buttons).toHaveLength(2);
+      },
+      { photoStatus: 403 },
     );
   });
 });

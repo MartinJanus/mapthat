@@ -36,8 +36,8 @@ Hong Kong country-style components and HK/SAR aliases. Names use normalized toke
 overlap, distinctive name tokens after removing business descriptors, and compact
 handle comparison. Contextual destination suffixes such as `hk` are removed from
 compact handles when the caption identifies that destination. A candidate must
-score at least 0.8 and lead the runner-up by 0.2. Competing branches remain
-ambiguous. Non-exact accepted names are shown as **Likely match**; this is a
+score at least 0.8 and lead the runner-up by 0.2. Competing plausible branches can be returned as explicitly labelled possible
+matches in the Instagram flow. Non-exact accepted names are shown as **Likely match**; this is a
 heuristic, not a calibrated probability or proof of the branch.
 
 Gemini is instructed to apply shared city/country context only when the whole
@@ -150,7 +150,9 @@ missing-geography and unavailable matches become explicitly labelled search card
 with the caption's city/country included in the Maps queries. They have no
 invented coordinates, place ID or unrelated photo. Strong contextual matches
 continue to show the selected venue and photo; approximate accepted names retain
-the Likely match label. Matching thresholds are unchanged.
+the Likely match label. The minimum name score and geography/address checks are unchanged. When several
+plausible candidates are close, the best-ranked candidate can now appear as a
+Possible match instead of an unresolved search card.
 
 The normal response is the progress message followed by one carousel per ten
 locations, with only Google Maps and Apple Maps buttons. Credits do not create
@@ -163,3 +165,26 @@ References:
 - [Google photo attribution and space-limited galleries](https://developers.google.com/maps/documentation/places/web-service/policies#photos_and_reviews)
 - [Google photo source URL](https://developers.google.com/maps/documentation/places/web-service/reference/rest/v1/places#Photo)
 - [Meta generic template default action](https://www.postman.com/meta/instagram/documentation/6yqw8pt/instagram-api)
+
+## Possible matches with photos
+
+The Instagram matcher permits a suggestion when the best geographically compatible
+candidate meets the existing 0.8 name threshold but does not beat the runner-up by
+0.2. It keeps the best name score, preserving Google's returned order for tied
+scores. This is a heuristic suggestion, not a calibrated confidence probability.
+The strict `selectPlaceMatch` default is retained for callers that do not opt in.
+
+These cards say **Google Maps · Possible match · Check address** before the
+address. Their photo, place ID, Google Maps link and Apple Maps coordinates all
+belong to that one selected candidate. Photos are loaded after selection; photo
+availability never chooses the branch. If no photo can load, the warning and both
+links remain. Existing photo attribution/source navigation is preserved.
+
+Contradictory city/country or an explicit address hint is never discarded to make
+a guess. Weak names and missing geography still yield search cards. Strong,
+distinct matches retain their previous confidence labels.
+
+A possible caption match remains eligible for optional video refinement. Video
+can replace it with a better-supported match (including the same Google place
+ID); a failed video request leaves the possible card intact. Confirmed caption
+matches remain protected from replacement.
