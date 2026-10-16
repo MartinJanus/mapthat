@@ -192,7 +192,7 @@ matches remain protected from replacement.
 ## Reading pipeline diagnostics
 
 The first verified webhook handled by each server instance logs
-`instagram.pipeline` with version `possible-photos-diagnostics-v1`,
+`instagram.pipeline` with version `possible-photos-diagnostics-v2`,
 configured-provider flags, a validated Gemini model ID, and whether video is
 enabled. If this marker is absent after restarting and sending a new Reel,
 check your branch and rebuild: `npm start` runs the previous production build.
@@ -241,3 +241,28 @@ URLs, photo URLs, keys and provider response bodies. They include only counts,
 scores, allowlisted categories and random/hashed correlation references. The new
 Gemini failure logger includes HTTP status, including `402/payment_required`.
 No database or external log sink is introduced by this change.
+
+## Unsupported media and uncertainty follow-up
+
+Incoming unsupported attachments (posts, images, videos or unknown attachment
+types), or Meta's explicit `is_unsupported` flag, receive one helpful reply
+asking the sender to share an Instagram Reel. This skips extraction, matching,
+reactions and the progress message. The normal incoming-account, message-age,
+echo/self/deleted checks still apply. Read receipts and plain-text events are
+not treated as unsupported media. Redelivery cannot repeat the reply during
+the existing deduplication window; uncertain delivery failures are not retried.
+A usable Reel in mixed attachments is processed rather than rejected.
+
+After all carousel batches (or successfully delivered text fallbacks), one note
+lists the displayed locations that remain uncertain: possible matches, likely
+matches and unverified search cards. Confident matches are excluded even when
+they have no photo. Names are deduplicated. The note is sent after the locations,
+not before/between carousel batches, and is omitted if no uncertain location was
+successfully delivered. The existing 1,000-byte text splitter handles long names.
+
+Example: Not verified: Kwan Kee Claypot; Ying Kee Noodle. Please double-check
+these locations before you go.
+
+The two Maps buttons and in-card confidence labels remain. The additional reply
+stages are `unsupported_media` and `verification_note`; names and message text
+are not added to logs.

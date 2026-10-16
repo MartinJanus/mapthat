@@ -164,7 +164,7 @@ export function createWebhookHandlers(options: {
           configurationReported = true;
           log({
             event: "instagram.pipeline",
-            version: "possible-photos-diagnostics-v1",
+            version: "possible-photos-diagnostics-v2",
             possibleMatches: 1,
             geminiConfigured: extractionConfig.success ? 1 : 0,
             placesConfigured: placesConfig.success ? 1 : 0,

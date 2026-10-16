@@ -15,9 +15,14 @@ const environment = {
 };
 
 describe("signed Reel webhook to Instagram cards", () => {
-  it.each([200, 400])(
-    "delivers the Maps result through the API when the card endpoint returns %s",
-    async (cardStatus) => {
+  it.each([
+    [200, "high"],
+    [400, "high"],
+    [200, "possible"],
+    [400, "possible"],
+  ] as const)(
+    "delivers the Maps result for HTTP %s and confidence %s",
+    async (cardStatus, confidence) => {
       const requests: unknown[] = [];
       const server = createServer(async (request, reply) => {
         const chunks: Buffer[] = [];
@@ -75,7 +80,7 @@ describe("signed Reel webhook to Instagram cards", () => {
             id: googlePlaceIdSchema.parse("place-1"),
             name: "Cafe Test",
             address: "Berlin, Germany",
-            confidence: "high",
+            confidence,
             attributions: [],
             links: {
               googleMaps:
@@ -133,7 +138,7 @@ describe("signed Reel webhook to Instagram cards", () => {
           (record) => record.event === "instagram.pipeline",
         );
         expect(pipeline).toMatchObject({
-          version: "possible-photos-diagnostics-v1",
+          version: "possible-photos-diagnostics-v2",
           possibleMatches: 1,
         });
         const cardLog = logs.find(
@@ -188,7 +193,7 @@ describe("signed Reel webhook to Instagram cards", () => {
           },
         });
         if (cardStatus === 400) {
-          expect(requests).toHaveLength(4);
+          expect(requests).toHaveLength(confidence === "high" ? 4 : 5);
           expect(requests[3]).toMatchObject({
             message: {
               text: expect.stringContaining(
@@ -196,13 +201,99 @@ describe("signed Reel webhook to Instagram cards", () => {
               ),
             },
           });
-        } else expect(requests).toHaveLength(3);
+        } else expect(requests).toHaveLength(confidence === "high" ? 3 : 4);
+        if (confidence !== "high") {
+          expect(requests.at(-1)).toMatchObject({
+            message: {
+              text: "Not verified: Cafe Test. Please double-check these locations before you go.",
+            },
+          });
+        }
       } finally {
         const closed = once(server, "close");
         server.close();
         server.closeAllConnections();
         await closed;
       }
+    },
+  );
+});
+
+describe("unsupported incoming media webhook", () => {
+  it.each(["image", "flag"])(
+    "replies once for %s and ignores its echo",
+    async (type) => {
+      const texts: string[] = [];
+      let ordinaryReplies = 0;
+      let extractions = 0;
+      const handlers = createWebhookHandlers({
+        environment: () => environment,
+        captureReel: async () => {},
+        sender: () => async () => {
+          ordinaryReplies++;
+          return { kind: "sent" };
+        },
+        messenger: () => ({
+          sendText: async (_, text) => {
+            texts.push(text);
+            return { kind: "sent" };
+          },
+          reactToMessage: async () => {
+            throw new Error("No unsupported-media reaction");
+          },
+          sendGenericTemplate: async () => {
+            throw new Error("No unsupported-media carousel");
+          },
+        }),
+        extract: async () => {
+          extractions++;
+          return { kind: "no-place" };
+        },
+        log: () => {},
+      });
+      async function deliver(echo = false) {
+        const body = JSON.stringify({
+          object: "instagram",
+          entry: [
+            {
+              id: "10001",
+              messaging: [
+                {
+                  sender: { id: "20002" },
+                  recipient: { id: "10001" },
+                  timestamp: Date.now(),
+                  message: {
+                    mid: "unsupported-incoming",
+                    ...(type === "flag"
+                      ? { is_unsupported: true }
+                      : { attachments: [{ type: "image" }] }),
+                    ...(echo ? { is_echo: true } : {}),
+                  },
+                },
+              ],
+            },
+          ],
+        });
+        const signature =
+          "sha256=" +
+          createHmac("sha256", environment.INSTAGRAM_APP_SECRET)
+            .update(body)
+            .digest("hex");
+        return handlers.POST(
+          new Request("https://example.test/api/instagram/webhook", {
+            method: "POST",
+            body,
+            headers: { "X-Hub-Signature-256": signature },
+          }),
+        );
+      }
+      expect((await deliver()).status).toBe(200);
+      expect((await deliver()).status).toBe(200);
+      expect((await deliver(true)).status).toBe(200);
+      expect(texts).toHaveLength(1);
+      expect(texts[0]).toContain("Instagram Reel");
+      expect(ordinaryReplies).toBe(0);
+      expect(extractions).toBe(0);
     },
   );
 });

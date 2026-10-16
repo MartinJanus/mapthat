@@ -20,33 +20,42 @@ const entrySchema = z.object({
   id: instagramIdSchema,
   messaging: z.array(z.unknown()),
 });
-const reelMessageSchema = z.object({
+const incomingMessageSchema = z.object({
   sender: z.object({ id: instagramIdSchema }),
   recipient: z.object({ id: instagramIdSchema }),
   timestamp: z.number().int().nonnegative(),
   message: z.object({
     mid: z.string().min(1),
-    attachments: z
-      .array(
-        z.object({
-          type: z.literal("ig_reel"),
-          payload: z.object({
-            title: z.string().trim().default(""),
-            reel_video_id: z
-              .string()
-              .regex(/^\d+$/)
-              .optional()
-              .catch(undefined),
-            url: z.string().optional().catch(undefined),
-          }),
-        }),
-      )
-      .min(1),
+    attachments: z.array(z.unknown()).optional(),
     is_echo: z.boolean().optional(),
     is_self: z.boolean().optional(),
     is_deleted: z.boolean().optional(),
+    is_unsupported: z.boolean().optional(),
   }),
 });
+const reelAttachmentSchema = z.object({
+  type: z.literal("ig_reel"),
+  payload: z.object({
+    title: z.string().trim().default(""),
+    reel_video_id: z.string().regex(/^\d+$/).optional().catch(undefined),
+    url: z.string().optional().catch(undefined),
+  }),
+});
+const reelMessageSchema = incomingMessageSchema.extend({
+  message: incomingMessageSchema.shape.message.extend({
+    attachments: z
+      .array(z.unknown())
+      .transform((attachments) =>
+        attachments.flatMap((raw) => {
+          const parsed = reelAttachmentSchema.safeParse(raw);
+          return parsed.success ? [parsed.data] : [];
+        }),
+      )
+      .refine((attachments) => attachments.length > 0),
+  }),
+});
+const UNSUPPORTED_MEDIA_REPLY =
+  "I can't process this type of media yet. Please share an Instagram Reel using Instagram's Share button.";
 
 const EVENT_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DEDUPLICATION_RETENTION_MS = 36 * 60 * 60 * 1000;
@@ -89,26 +98,50 @@ export function createReelMessageProcessor(
         continue;
       }
       for (const rawMessage of entry.data.messaging) {
-        const event = reelMessageSchema.safeParse(rawMessage);
-        if (!event.success || !isIncomingReel(event.data, account, now())) {
+        const incoming = incomingMessageSchema.safeParse(rawMessage);
+        if (
+          !incoming.success ||
+          !isIncomingMessage(incoming.data, account, now())
+        ) {
           summary.ignored++;
           log({
             event: "instagram.reel_ignored",
-            reason: !event.success
+            reason: !incoming.success
               ? "unsupported_event"
               : "outgoing_or_outside_window",
           });
           continue;
         }
+        const event = reelMessageSchema.safeParse(rawMessage);
+        const unsupported =
+          Boolean(incoming.data.message.is_unsupported) ||
+          (!event.success &&
+            Boolean(incoming.data.message.attachments?.length));
+        if (!event.success && !unsupported) {
+          summary.ignored++;
+          continue;
+        }
         await withDiagnosticContext({ reelId: randomUUID() }, async () => {
-          const key = `${account}:${event.data.message.mid}`;
+          const key = `${account}:${incoming.data.message.mid}`;
           if (attempts.has(key)) {
             summary.duplicate++;
             log({ event: "instagram.reel_ignored", reason: "duplicate" });
             return;
           }
           attempts.set(key, now() + DEDUPLICATION_RETENTION_MS);
-          const recipient = event.data.sender.id;
+          const recipient = incoming.data.sender.id;
+          if (unsupported) {
+            const reply = await sendText(recipient, UNSUPPORTED_MEDIA_REPLY);
+            log({
+              event: "instagram.reply",
+              stage: "unsupported_media",
+              outcome: reply.kind,
+            });
+            if (reply.kind === "sent") summary.sent++;
+            else summary.failed++;
+            return;
+          }
+          if (!event.success) return;
 
           if (typeof messenger !== "function") {
             const reaction = await messenger.reactToMessage(
@@ -170,6 +203,7 @@ export function createReelMessageProcessor(
                 (card) => card.element.image_url,
               ).length,
             });
+            const unverifiedNames = new Set<string>();
             for (const text of prepared.texts) await sendReply(text);
             for (let offset = 0; offset < prepared.cards.length; offset += 10) {
               const cards = prepared.cards.slice(offset, offset + 10);
@@ -188,16 +222,31 @@ export function createReelMessageProcessor(
               switch (sent.kind) {
                 case "sent":
                   summary.sent++;
+                  for (const card of cards) {
+                    if (card.unverifiedName)
+                      unverifiedNames.add(card.unverifiedName);
+                  }
                   break;
                 case "failed":
                   summary.failed++;
-                  for (const card of cards) await sendReply(card.fallback);
+                  for (const card of cards) {
+                    if (await sendReply(card.fallback)) {
+                      if (card.unverifiedName)
+                        unverifiedNames.add(card.unverifiedName);
+                    }
+                  }
                   break;
                 default: {
                   const exhaustive: never = sent;
                   return exhaustive;
                 }
               }
+            }
+            if (unverifiedNames.size) {
+              await sendReply(
+                `Not verified: ${[...unverifiedNames].join("; ")}. Please double-check these locations before you go.`,
+                "verification_note",
+              );
             }
             return;
           }
@@ -212,13 +261,16 @@ export function createReelMessageProcessor(
             else summary.failed++;
           }
 
-          async function sendReply(text: string) {
+          async function sendReply(
+            text: string,
+            stage: "text_fallback" | "verification_note" = "text_fallback",
+          ) {
             let success = true;
             for (const part of splitMessageText(text)) {
               const sent = await sendText(recipient, part);
               log({
                 event: "instagram.reply",
-                stage: "text_fallback",
+                stage,
                 outcome: sent.kind,
               });
               if (sent.kind === "sent") summary.sent++;
@@ -245,8 +297,8 @@ function removeExpiredAttempts(
   }
 }
 
-function isIncomingReel(
-  event: z.infer<typeof reelMessageSchema>,
+function isIncomingMessage(
+  event: z.infer<typeof incomingMessageSchema>,
   account: InstagramId,
   timestamp: number,
 ) {

@@ -11,6 +11,7 @@ import type { MatchPlace, MatchedPlace } from "../places/google";
 export type PlaceCard = {
   readonly element: GenericElement;
   readonly fallback: string;
+  readonly unverifiedName?: string;
 };
 
 export async function preparePlaceCards(
@@ -127,6 +128,7 @@ function buildMatchedCard(
   });
   const card = buildCard(place.name, subtitle, place.links);
   return {
+    ...(place.confidence !== "high" ? { unverifiedName: place.name } : {}),
     element: {
       ...card.element,
       ...(imageUrl ? { image_url: imageUrl } : {}),
@@ -144,6 +146,7 @@ function buildCard(
   links: PlaceSearchLinks,
 ): PlaceCard {
   return {
+    unverifiedName: name,
     element: {
       title: truncate(name, 80),
       subtitle: truncate(subtitle, 80),
