@@ -6,7 +6,6 @@ import type { MatchPlace, MatchedPlace } from "../places/google";
 export type PlaceCard = {
   readonly element: GenericElement;
   readonly fallback: string;
-  readonly attributions: readonly string[];
 };
 
 export async function preparePlaceCards(
@@ -14,98 +13,85 @@ export async function preparePlaceCards(
   match?: MatchPlace,
 ) {
   const cards: PlaceCard[] = [];
-  const texts: string[] = [];
   for (const mention of extraction.mentions) {
-    if (!mention.city && !mention.country) {
-      texts.push(
-        `I found ${mention.name}, but the caption does not give enough location detail to identify the right place.`,
+    const searchCard = (label: string) =>
+      buildCard(
+        mention.name,
+        [label, mention.city, mention.country].filter(Boolean).join(" · "),
+        createPlaceSearchLinks(mention),
       );
+    if (!mention.city && !mention.country) {
+      cards.push(searchCard("Location unclear · Search results"));
       continue;
     }
     if (!match) {
-      const links = createPlaceSearchLinks(mention);
-      cards.push(
-        buildCard(mention.name, "Caption candidate (not verified)", links),
-      );
+      cards.push(searchCard("Caption candidate (not verified)"));
       continue;
     }
     const result = await match(mention);
     switch (result.kind) {
       case "matched":
       case "no-photo":
-        cards.push(buildMatchedCard(result.place));
+        cards.push(
+          buildMatchedCard(result.place) ?? searchCard("Search results"),
+        );
         break;
       case "ambiguous":
-        texts.push(
-          `I found ${mention.name}, but couldn't confidently match it to one location.`,
-        );
+        cards.push(searchCard("Possible locations · Search results"));
         break;
       case "not-found":
-        texts.push(`I couldn't find a matching location for ${mention.name}.`);
+        cards.push(searchCard("Search results · Not verified"));
         break;
-      case "unavailable": {
-        const links = createPlaceSearchLinks(mention);
-        texts.push(
-          `${mention.name}: place matching is unavailable. These are caption search links, not a verified location.\nGoogle Maps: ${links.googleMaps}\nApple Maps: ${links.appleMaps}`,
-        );
+      case "unavailable":
+        cards.push(searchCard("Search results · Matching unavailable"));
         break;
-      }
       default: {
         const exhaustive: never = result;
         return exhaustive;
       }
     }
   }
-  return { cards, texts };
+  return { cards, texts: [] as readonly string[] };
 }
 
-function buildMatchedCard(place: MatchedPlace): PlaceCard {
+function buildMatchedCard(place: MatchedPlace): PlaceCard | undefined {
   const label =
     place.confidence === "medium"
       ? "Google Maps · Likely match"
       : "Google Maps";
-  const card = buildCard(
-    place.name,
-    `${label} · ${place.address}`,
-    place.links,
-  );
+  const providerNames = [
+    ...new Set(place.attributions.map((value) => value.provider)),
+  ];
+  const sourceLabel = [label, ...providerNames].join(" · ");
+  // Never truncate required provider names. Fall back to a caption search card.
+  if (sourceLabel.length > 60) return undefined;
+  let subtitle = `${sourceLabel} · ${truncate(place.address, 80 - sourceLabel.length - 3)}`;
   const credits =
     place.photoCredits ?? (place.photoCredit ? [place.photoCredit] : []);
-  const credit =
-    credits.length === 1 && credits[0] && credits[0].displayName.length <= 20
-      ? credits[0]
-      : undefined;
+  let imageUrl = place.imageUrl;
+  let photoTarget = place.photoSourceUrl;
+  if (imageUrl && !photoTarget && credits.length) {
+    const credit = credits.length === 1 ? credits[0] : undefined;
+    const creditLabel = credit ? ` · Photo: ${credit.displayName}` : "";
+    // Legacy photo metadata can still be credited within the card.
+    if (credit && sourceLabel.length + creditLabel.length + 8 <= 80) {
+      subtitle = `${sourceLabel} · ${truncate(place.address, 80 - sourceLabel.length - creditLabel.length - 3)}${creditLabel}`;
+      photoTarget = credit.uri;
+    } else {
+      // Keep the place card if its photo credits cannot fit this UI.
+      imageUrl = undefined;
+    }
+  }
+  const card = buildCard(place.name, subtitle, place.links);
   return {
     element: {
       ...card.element,
-      ...(place.imageUrl ? { image_url: place.imageUrl } : {}),
-      ...(credit
-        ? {
-            subtitle: truncate(`${label} · ${place.address}`, 80),
-            buttons: [
-              ...card.element.buttons,
-              {
-                type: "web_url",
-                title:
-                  credit.displayName.length <= 20
-                    ? credit.displayName
-                    : "Photo credit",
-                url: credit.uri,
-              },
-            ],
-          }
+      ...(imageUrl ? { image_url: imageUrl } : {}),
+      ...(imageUrl && photoTarget
+        ? { default_action: { type: "web_url", url: photoTarget } as const }
         : {}),
     },
-    fallback: `${place.name}\n${place.address}\n${label}\nGoogle Maps: ${place.links.googleMaps}\nApple Maps: ${place.links.appleMaps}${place.attributions.map((value) => `\n${value.provider}: ${value.providerUri}`).join("")}`,
-    attributions: [
-      ...place.attributions.map(
-        (value) => `${value.provider}: ${value.providerUri}`,
-      ),
-      ...credits.map(
-        (value) =>
-          `Photo of ${place.name} by ${value.displayName}: ${value.uri}`,
-      ),
-    ],
+    fallback: `${place.name}\n${place.address}\n${sourceLabel}\nGoogle Maps: ${place.links.googleMaps}\nApple Maps: ${place.links.appleMaps}`,
   };
 }
 
@@ -124,7 +110,6 @@ function buildCard(
       ],
     },
     fallback: `${name}\n${subtitle}\nGoogle Maps: ${links.googleMaps}\nApple Maps: ${links.appleMaps}`,
-    attributions: [],
   };
 }
 

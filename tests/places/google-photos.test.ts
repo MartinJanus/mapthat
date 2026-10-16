@@ -4,6 +4,7 @@ import { preparePlaceCards } from "../../src/features/instagram/place-cards";
 
 const firstPhoto = {
   name: "places/place-1/photos/first",
+  googleMapsUri: "https://maps.google.com/maps/photo/first",
   authorAttributions: [
     {
       displayName: "A Photographer With A Long Display Name",
@@ -31,9 +32,11 @@ describe("confident place photo cards", () => {
           image_url: "https://images.example.test/first.jpg",
           subtitle: "Google Maps · Test Street, Berlin, Germany",
         });
-        expect(prepared.cards[0]?.attributions).toEqual([
-          "Photo of Cafe Test by A Photographer With A Long Display Name: https://maps.google.com/contrib/author",
-        ]);
+        expect(prepared.cards[0]?.element.default_action).toEqual({
+          type: "web_url",
+          url: firstPhoto.googleMapsUri,
+        });
+        expect(prepared.texts).toEqual([]);
         expect(
           prepared.cards[0]?.element.buttons.map((button) => button.title),
         ).toEqual(["Google Maps", "Apple Maps"]);
@@ -63,10 +66,11 @@ describe("confident place photo cards", () => {
         expect(prepared.cards[0]?.element.image_url).toBe(
           "https://images.example.test/first.jpg",
         );
-        expect(prepared.cards[0]?.attributions).toEqual([
-          "Photo of Cafe Test by A Photographer With A Long Display Name: https://maps.google.com/contrib/author",
-          "Photo of Cafe Test by Second Author: https://maps.google.com/contrib/second",
-        ]);
+        expect(prepared.cards[0]?.element.default_action?.url).toBe(
+          firstPhoto.googleMapsUri,
+        );
+        expect(prepared.texts).toEqual([]);
+        expect(prepared.cards[0]?.element.buttons).toHaveLength(2);
       },
     );
   });

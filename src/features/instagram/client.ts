@@ -34,6 +34,10 @@ export const genericElementSchema = z
     title: z.string().min(1).max(80),
     subtitle: z.string().min(1).max(80).optional(),
     image_url: httpsUrlSchema.optional(),
+    default_action: z
+      .object({ type: z.literal("web_url"), url: httpsUrlSchema })
+      .readonly()
+      .optional(),
     buttons: z
       .array(
         z

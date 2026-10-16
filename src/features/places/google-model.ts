@@ -31,6 +31,7 @@ const attributionSchema = z
 export const photoSchema = z.object({
   name: z.string().regex(/^places\/[^/?#\s]+\/photos\/[^/?#\s]+$/),
   authorAttributions: z.array(attributionSchema).default([]),
+  googleMapsUri: publicUrlSchema.optional().catch(undefined),
 });
 export const placeSchema = z.object({
   id: googlePlaceIdSchema,
@@ -65,6 +66,7 @@ export type MatchedPlace = {
   readonly confidence: "high" | "medium";
   readonly links: PlaceSearchLinks;
   readonly imageUrl?: string;
+  readonly photoSourceUrl?: string;
   readonly photoCredit?: z.infer<typeof attributionSchema>;
   readonly photoCredits?: readonly z.infer<typeof attributionSchema>[];
   readonly attributions: readonly {
