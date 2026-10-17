@@ -104,9 +104,22 @@ export async function resolveReel(
     const result = await memoized(mention);
     if (result.kind !== "matched" && result.kind !== "no-photo") continue;
     if (resolvedIds.has(result.place.id)) continue;
-    const index = merged.findIndex(
-      (existing) => identity(existing) === identity(mention),
-    );
+    // Video can use a business name where the caption used an Instagram handle.
+    // Reconcile the canonical place before falling back to the mention name.
+    const placeIndex = merged.findIndex((existing) => {
+      const existingResult = results.get(key(existing));
+      return (
+        (existingResult?.kind === "matched" ||
+          existingResult?.kind === "no-photo") &&
+        existingResult.place.id === result.place.id
+      );
+    });
+    const index =
+      placeIndex >= 0
+        ? placeIndex
+        : merged.findIndex(
+            (existing) => identity(existing) === identity(mention),
+          );
     // A successful caption match always wins over video output.
     if (index >= 0 && !unresolved.includes(merged[index])) continue;
     if (index >= 0) merged[index] = mention;
