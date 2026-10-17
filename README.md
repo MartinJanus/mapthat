@@ -109,8 +109,10 @@ service layers now.
 
 The Instagram integration includes the fixed-reply connectivity experiment and
 caption-based place extraction with reactions, Maps-button cards, optional Google
-Places matching/photos, and text fallbacks. Video/audio extraction, databases,
-background jobs, production deployment, and discovery rankings remain outside it.
+Places matching/photos, and text fallbacks. Optional video/audio fallback and backend-only Supabase request tracking are also
+available. See [Supabase tracking setup](docs/supabase-tracking.md) for configuration,
+reporting views and reliability limits. Background jobs, production deployment,
+a web dashboard and discovery rankings remain next steps.
 
 ## Project workflow and scope
 

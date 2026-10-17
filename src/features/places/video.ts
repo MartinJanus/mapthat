@@ -1,3 +1,4 @@
+import { measureProviderCall } from "../tracking/requests";
 import { GoogleGenAI } from "@google/genai";
 import { z } from "zod";
 import { placeMentionSchema } from "./caption";
@@ -101,22 +102,35 @@ function createGenerator(config: GeminiConfig): GenerateVideo {
     httpOptions: { timeout: 30000 },
   });
   return async (media, prompt) => {
-    const response = await client.models.generateContent({
-      model: config.GEMINI_MODEL,
-      contents: [
-        {
-          inlineData: media,
-          videoMetadata: { startOffset: "0s", endOffset: "180s", fps: 1 },
-        },
-        { text: prompt },
-      ],
-      config: {
-        maxOutputTokens: 8192,
-        temperature: 0,
-        responseMimeType: "application/json",
-        responseJsonSchema: z.toJSONSchema(videoSchema),
-      },
-    });
+    const response = await measureProviderCall(
+      "gemini",
+      "video",
+      () =>
+        client.models.generateContent({
+          model: config.GEMINI_MODEL,
+          contents: [
+            {
+              inlineData: media,
+              videoMetadata: { startOffset: "0s", endOffset: "180s", fps: 1 },
+            },
+            { text: prompt },
+          ],
+          config: {
+            maxOutputTokens: 8192,
+            temperature: 0,
+            responseMimeType: "application/json",
+            responseJsonSchema: z.toJSONSchema(videoSchema),
+          },
+        }),
+      (result) => ({
+        model: result.modelVersion ?? config.GEMINI_MODEL,
+        input_tokens: result.usageMetadata?.promptTokenCount,
+        output_tokens: result.usageMetadata?.candidatesTokenCount,
+        cached_tokens: result.usageMetadata?.cachedContentTokenCount,
+        thought_tokens: result.usageMetadata?.thoughtsTokenCount,
+        total_tokens: result.usageMetadata?.totalTokenCount,
+      }),
+    );
     return response.text;
   };
 }

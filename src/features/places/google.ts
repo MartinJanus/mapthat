@@ -1,3 +1,4 @@
+import { measureProviderCall } from "../tracking/requests";
 import ky, { NetworkError, TimeoutError, ResponseSizeError } from "ky";
 import { z } from "zod";
 import {
@@ -58,26 +59,29 @@ export function createGooglePlacesMatcher(
       return { kind: "ambiguous" };
     }
     try {
-      const response = await client.post(
-        "https://places.googleapis.com/v1/places:searchText",
-        {
-          headers: {
-            "X-Goog-FieldMask":
-              "places.id,places.displayName,places.formattedAddress,places.location,places.addressComponents,places.photos,places.attributions",
-          },
-          json: {
-            textQuery: [
-              searchName(mention),
-              mention.addressHint,
-              mention.city,
-              mention.country,
-            ]
-              .filter(Boolean)
-              .join(", "),
-            pageSize: 20,
-            languageCode: "en",
-          },
-        },
+      const response = await measureProviderCall(
+        "google_places",
+        "search",
+        () =>
+          client.post("https://places.googleapis.com/v1/places:searchText", {
+            headers: {
+              "X-Goog-FieldMask":
+                "places.id,places.displayName,places.formattedAddress,places.location,places.addressComponents,places.photos,places.attributions",
+            },
+            json: {
+              textQuery: [
+                searchName(mention),
+                mention.addressHint,
+                mention.city,
+                mention.country,
+              ]
+                .filter(Boolean)
+                .join(", "),
+              pageSize: 20,
+              languageCode: "en",
+            },
+          }),
+        (result) => ({ succeeded: result.ok, http_status: result.status }),
       );
       if (!response.ok) {
         diagnostic("search", "http", response.status);
@@ -194,9 +198,14 @@ export function createGooglePlacesMatcher(
 
   async function loadPhoto(name: string): Promise<string | undefined> {
     try {
-      const response = await client.get(
-        `https://places.googleapis.com/v1/${name}/media`,
-        { searchParams: { maxWidthPx: 800, skipHttpRedirect: true } },
+      const response = await measureProviderCall(
+        "google_places",
+        "photo",
+        () =>
+          client.get(`https://places.googleapis.com/v1/${name}/media`, {
+            searchParams: { maxWidthPx: 800, skipHttpRedirect: true },
+          }),
+        (result) => ({ succeeded: result.ok, http_status: result.status }),
       );
       if (!response.ok) {
         diagnostic("photo", "http", response.status);

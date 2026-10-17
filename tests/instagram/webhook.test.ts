@@ -1,3 +1,5 @@
+import { TrackingUnavailableError } from "../../src/features/tracking/requests";
+import type { RequestStore } from "../../src/features/tracking/requests";
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createWebhookHandlers } from "../../src/features/instagram/webhook";
@@ -9,11 +11,12 @@ const environment = {
   INSTAGRAM_ACCOUNT_ID: "10001",
 } as const;
 
-function setup(env: unknown = environment) {
+function setup(env: unknown = environment, requestStore?: RequestStore) {
   const recipients: string[] = [];
   const records: Readonly<Record<string, string | number>>[] = [];
   const handlers = createWebhookHandlers({
     environment: () => env,
+    requestStore,
     sender: () => async (recipient) => {
       recipients.push(recipient);
       return { kind: "sent" };
@@ -178,4 +181,44 @@ describe("Instagram webhook authentication", () => {
     );
     expect(handlers.recipients).toEqual([]);
   });
+});
+
+it("returns 503 on a signed Reel when persistence cannot claim it", async () => {
+  const handlers = setup(environment, {
+    begin: async () => {
+      throw new TrackingUnavailableError();
+    },
+    complete: async () => {},
+  });
+  const body = JSON.stringify({
+    object: "instagram",
+    entry: [
+      {
+        id: environment.INSTAGRAM_ACCOUNT_ID,
+        messaging: [
+          {
+            sender: { id: "20002" },
+            recipient: { id: environment.INSTAGRAM_ACCOUNT_ID },
+            timestamp: Date.now(),
+            message: {
+              mid: "database-outage",
+              attachments: [
+                {
+                  type: "ig_reel",
+                  payload: { title: "Visit Cafe in Berlin" },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  });
+  const response = await handlers.POST(notification(body, sign(body)));
+  expect(response.status).toBe(503);
+  expect(await response.text()).toBe("Request persistence unavailable");
+  expect(handlers.recipients).toEqual([]);
+  expect(handlers.records).toContainEqual(
+    expect.objectContaining({ event: "instagram.persistence_failed" }),
+  );
 });

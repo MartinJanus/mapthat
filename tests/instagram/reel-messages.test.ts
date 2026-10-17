@@ -1,3 +1,6 @@
+import { vi } from "vitest";
+import { TrackingUnavailableError } from "../../src/features/tracking/requests";
+import type { RequestStore } from "../../src/features/tracking/requests";
 import { describe, expect, it } from "vitest";
 import { instagramIdSchema } from "../../src/features/instagram/config";
 import { envelopeSchema } from "../../src/features/instagram/messages";
@@ -684,5 +687,63 @@ describe("verification note after locations", () => {
     await process(batch([event("undelivered")]), account, messenger);
     expect(texts).toHaveLength(2);
     expect(texts.some((text) => text.startsWith("Not verified:"))).toBe(false);
+  });
+});
+
+describe("durable request tracking in the Reel flow", () => {
+  it("deduplicates redelivery after a processor restart before any replies or extraction", async () => {
+    const claimed = new Set<string>();
+    const complete = vi
+      .fn<RequestStore["complete"]>()
+      .mockResolvedValue(undefined);
+    const requestStore: RequestStore = {
+      begin: async ({ messageId }) => {
+        if (claimed.has(messageId)) return false;
+        claimed.add(messageId);
+        return true;
+      },
+      complete,
+    };
+    const extract = vi.fn().mockResolvedValue(extracted);
+    const recorded = recordingMessenger();
+    const options = { now: () => timestamp + 1000, extract, requestStore };
+    await createReelMessageProcessor(options)(
+      batch([event("durable")]),
+      account,
+      recorded.messenger,
+    );
+    const result = await createReelMessageProcessor(options)(
+      batch([event("durable")]),
+      account,
+      recorded.messenger,
+    );
+    expect(result.duplicate).toBe(1);
+    expect(extract).toHaveBeenCalledOnce();
+    expect(recorded.cards).toHaveLength(1);
+    expect(complete).toHaveBeenCalledOnce();
+    expect(complete.mock.calls[0][1].places[0].mention_name).toBe(
+      "Yat Lok Restaurant",
+    );
+  });
+
+  it("does not spend or send when the database cannot claim the request", async () => {
+    const extract = vi.fn();
+    const recorded = recordingMessenger();
+    const process = createReelMessageProcessor({
+      now: () => timestamp + 1000,
+      extract,
+      requestStore: {
+        begin: async () => {
+          throw new TrackingUnavailableError();
+        },
+        complete: async () => {},
+      },
+    });
+    await expect(
+      process(batch([event("unavailable")]), account, recorded.messenger),
+    ).rejects.toBeInstanceOf(TrackingUnavailableError);
+    expect(extract).not.toHaveBeenCalled();
+    expect(recorded.texts).toHaveLength(0);
+    expect(recorded.reactions).toHaveLength(0);
   });
 });
