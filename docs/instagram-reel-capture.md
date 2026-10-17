@@ -36,8 +36,8 @@ Hong Kong country-style components and HK/SAR aliases. Names use normalized toke
 overlap, distinctive name tokens after removing business descriptors, and compact
 handle comparison. Contextual destination suffixes such as `hk` are removed from
 compact handles when the caption identifies that destination. A candidate must
-score at least 0.8 and lead the runner-up by 0.2. Competing branches remain
-ambiguous. Non-exact accepted names are shown as **Likely match**; this is a
+score at least 0.8 and lead the runner-up by 0.2. Competing plausible branches can be returned as explicitly labelled possible
+matches in the Instagram flow. Non-exact accepted names are shown as **Likely match**; this is a
 heuristic, not a calibrated probability or proof of the branch.
 
 Gemini is instructed to apply shared city/country context only when the whole
@@ -150,7 +150,9 @@ missing-geography and unavailable matches become explicitly labelled search card
 with the caption's city/country included in the Maps queries. They have no
 invented coordinates, place ID or unrelated photo. Strong contextual matches
 continue to show the selected venue and photo; approximate accepted names retain
-the Likely match label. Matching thresholds are unchanged.
+the Likely match label. The minimum name score and geography/address checks are unchanged. When several
+plausible candidates are close, the best-ranked candidate can now appear as a
+Possible match instead of an unresolved search card.
 
 The normal response is the progress message followed by one carousel per ten
 locations, with only Google Maps and Apple Maps buttons. Credits do not create
@@ -163,3 +165,104 @@ References:
 - [Google photo attribution and space-limited galleries](https://developers.google.com/maps/documentation/places/web-service/policies#photos_and_reviews)
 - [Google photo source URL](https://developers.google.com/maps/documentation/places/web-service/reference/rest/v1/places#Photo)
 - [Meta generic template default action](https://www.postman.com/meta/instagram/documentation/6yqw8pt/instagram-api)
+
+## Possible matches with photos
+
+The Instagram matcher permits a suggestion when the best geographically compatible
+candidate meets the existing 0.8 name threshold but does not beat the runner-up by
+0.2. It keeps the best name score, preserving Google's returned order for tied
+scores. This is a heuristic suggestion, not a calibrated confidence probability.
+The strict `selectPlaceMatch` default is retained for callers that do not opt in.
+
+These cards say **Google Maps · Possible match · Check address** before the
+address. Their photo, place ID, Google Maps link and Apple Maps coordinates all
+belong to that one selected candidate. Photos are loaded after selection; photo
+availability never chooses the branch. If no photo can load, the warning and both
+links remain. Existing photo attribution/source navigation is preserved.
+
+Contradictory city/country or an explicit address hint is never discarded to make
+a guess. Weak names and missing geography still yield search cards. Strong,
+distinct matches retain their previous confidence labels.
+
+A possible caption match remains eligible for optional video refinement. Video
+can replace it with a better-supported match (including the same Google place
+ID); a failed video request leaves the possible card intact. Confirmed caption
+matches remain protected from replacement.
+
+## Reading pipeline diagnostics
+
+The first verified webhook handled by each server instance logs
+`instagram.pipeline` with version `possible-photos-diagnostics-v2`,
+configured-provider flags, a validated Gemini model ID, and whether video is
+enabled. If this marker is absent after restarting and sending a new Reel,
+check your branch and rebuild: `npm start` runs the previous production build.
+
+After testing or merging this PR, update the checkout, run `npm ci`, then
+`npm run build`, and restart with your usual host/port arguments. During
+development, `npm run dev` recompiles changes automatically.
+
+Each verified webhook has a random `requestId`; each accepted Reel has a
+random `reelId`. Async context keeps concurrent requests separate. A hashed
+`placeRef` ties matching/photo events to `instagram.place_card`, where
+`placeIndex` is the one-based position in the extraction/carousel sequence.
+
+Useful events:
+
+- `instagram.caption_cache`: hit, miss, bypass, coalesced work, or read/write
+  failures. A cache hit skips Gemini, not Google matching/photo loading.
+- `instagram.caption_result`: extraction outcome, mention count, elapsed time
+  and whether a caption was present.
+- `instagram.video_decision` / `instagram.video_result`: whether fallback ran,
+  why it was skipped, and its extraction outcome.
+- `places.search_result`: raw, valid and malformed candidate counts.
+- `places.match_decision`: valid/unique candidate counts, candidates surviving
+  geography and address checks, top/runner-up scores, score gap, thresholds, and
+  the reason for accepting/rejecting. `weak_name`, `geography_conflict`,
+  `address_conflict` and `missing_geography` remain search cards.
+  `competing_candidates` with `possibleEnabled:1` yields a possible-match card.
+- `places.photo_attempt` / `places.photo_result`: metadata absence, attempted
+  photo count, usable photo, or all photos failed. `places.request_failed`
+  gives the stage and safe HTTP/transport failure category.
+- `instagram.place_card`: card position, location/search outcome, confidence,
+  photo presence and render reason. `photo_credits_cannot_fit` means Google
+  supplied an image but the card could not represent its credits/source link.
+- `instagram.cards_prepared`: total card/photo counts.
+- `instagram.reply`: reaction, progress, carousel or text-fallback delivery,
+  including safe failure reason and carousel batch count.
+- `instagram.reel_ignored`: unsupported event (including non-Reel updates),
+  outgoing/out-of-window event, or a duplicate already handled in this process.
+
+`sent:2` usually means one progress message and one carousel/error reply; it
+does not measure extraction accuracy. Repeated ignored webhook updates do not
+mean Gemini was called repeatedly. Use caption/cache/video events to see paid work.
+
+Logs omit raw captions, venue names, addresses, message/account IDs, signed media
+URLs, photo URLs, keys and provider response bodies. They include only counts,
+scores, allowlisted categories and random/hashed correlation references. The new
+Gemini failure logger includes HTTP status, including `402/payment_required`.
+No database or external log sink is introduced by this change.
+
+## Unsupported media and uncertainty follow-up
+
+Incoming unsupported attachments (posts, images, videos or unknown attachment
+types), or Meta's explicit `is_unsupported` flag, receive one helpful reply
+asking the sender to share an Instagram Reel. This skips extraction, matching,
+reactions and the progress message. The normal incoming-account, message-age,
+echo/self/deleted checks still apply. Read receipts and plain-text events are
+not treated as unsupported media. Redelivery cannot repeat the reply during
+the existing deduplication window; uncertain delivery failures are not retried.
+A usable Reel in mixed attachments is processed rather than rejected.
+
+After all carousel batches (or successfully delivered text fallbacks), one note
+lists the displayed locations that remain uncertain: possible matches, likely
+matches and unverified search cards. Confident matches are excluded even when
+they have no photo. Names are deduplicated. The note is sent after the locations,
+not before/between carousel batches, and is omitted if no uncertain location was
+successfully delivered. The existing 1,000-byte text splitter handles long names.
+
+Example: Not verified: Kwan Kee Claypot; Ying Kee Noodle. Please double-check
+these locations before you go.
+
+The two Maps buttons and in-card confidence labels remain. The additional reply
+stages are `unsupported_media` and `verification_note`; names and message text
+are not added to logs.

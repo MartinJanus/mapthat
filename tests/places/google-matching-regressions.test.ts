@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { mention, place, withPlaces } from "./google-fixtures";
+import { selectPlaceMatch } from "../../src/features/places/google";
+import { placeSchema } from "../../src/features/places/google-model";
 
 describe("contextual matching regressions", () => {
   it("accepts descriptor differences and bilingual business names", async () => {
@@ -28,7 +30,7 @@ describe("contextual matching regressions", () => {
     );
   });
 
-  it("keeps competing branches ambiguous even after descriptor normalization", async () => {
+  it("labels competing branches as a possible match", async () => {
     await withPlaces(
       {
         places: [place("a", "Mak Man Kee"), place("b", "Mak Man Kee Noodles")],
@@ -36,7 +38,10 @@ describe("contextual matching regressions", () => {
       async (match) => {
         expect(
           await match({ ...mention, name: "Mak Man Kee Noodle Shop" }),
-        ).toEqual({ kind: "ambiguous" });
+        ).toMatchObject({
+          kind: "matched",
+          place: { id: "a", confidence: "possible" },
+        });
       },
     );
   });
@@ -102,13 +107,47 @@ describe("contextual matching regressions", () => {
       },
       { status: 403, log: (record) => records.push(record) },
     );
-    expect(records).toContainEqual({
-      event: "places.request_failed",
-      stage: "search",
-      reason: "http",
-      status: 403,
-    });
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        event: "places.request_failed",
+        stage: "search",
+        reason: "http",
+        status: 403,
+      }),
+    );
     expect(JSON.stringify(records)).not.toContain("synthetic-google-key");
     expect(JSON.stringify(records)).not.toContain("secret provider response");
+  });
+});
+
+describe("possible-match limits", () => {
+  it.each([
+    { name: "Different Restaurant", city: "Berlin", country: "Germany" },
+    { name: "Cafe Test", city: "Munich", country: "Germany" },
+  ])(
+    "rejects contradictory candidates despite allowing guesses: %s",
+    (candidate) => {
+      const actual = placeSchema.parse(
+        place("wrong", candidate.name, candidate.city),
+      );
+      expect(
+        selectPlaceMatch(mention, [actual], { allowPossible: true }),
+      ).toEqual({
+        kind: "ambiguous",
+      });
+    },
+  );
+
+  it("does not ignore an explicit street or country to make a guess", () => {
+    const actual = placeSchema.parse(place());
+    for (const context of [
+      { ...mention, addressHint: "Another Street" },
+      { ...mention, country: "France" },
+      { ...mention, city: null, country: null },
+    ]) {
+      expect(
+        selectPlaceMatch(context, [actual], { allowPossible: true }),
+      ).toEqual({ kind: "ambiguous" });
+    }
   });
 });

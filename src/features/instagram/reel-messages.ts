@@ -1,3 +1,8 @@
+import { randomUUID } from "node:crypto";
+import {
+  createDiagnosticLogger,
+  withDiagnosticContext,
+} from "../observability/diagnostics";
 import { z } from "zod";
 import { instagramIdSchema } from "./config";
 import type { InstagramId } from "./config";
@@ -15,33 +20,42 @@ const entrySchema = z.object({
   id: instagramIdSchema,
   messaging: z.array(z.unknown()),
 });
-const reelMessageSchema = z.object({
+const incomingMessageSchema = z.object({
   sender: z.object({ id: instagramIdSchema }),
   recipient: z.object({ id: instagramIdSchema }),
   timestamp: z.number().int().nonnegative(),
   message: z.object({
     mid: z.string().min(1),
-    attachments: z
-      .array(
-        z.object({
-          type: z.literal("ig_reel"),
-          payload: z.object({
-            title: z.string().trim().default(""),
-            reel_video_id: z
-              .string()
-              .regex(/^\d+$/)
-              .optional()
-              .catch(undefined),
-            url: z.string().optional().catch(undefined),
-          }),
-        }),
-      )
-      .min(1),
+    attachments: z.array(z.unknown()).optional(),
     is_echo: z.boolean().optional(),
     is_self: z.boolean().optional(),
     is_deleted: z.boolean().optional(),
+    is_unsupported: z.boolean().optional(),
   }),
 });
+const reelAttachmentSchema = z.object({
+  type: z.literal("ig_reel"),
+  payload: z.object({
+    title: z.string().trim().default(""),
+    reel_video_id: z.string().regex(/^\d+$/).optional().catch(undefined),
+    url: z.string().optional().catch(undefined),
+  }),
+});
+const reelMessageSchema = incomingMessageSchema.extend({
+  message: incomingMessageSchema.shape.message.extend({
+    attachments: z
+      .array(z.unknown())
+      .transform((attachments) =>
+        attachments.flatMap((raw) => {
+          const parsed = reelAttachmentSchema.safeParse(raw);
+          return parsed.success ? [parsed.data] : [];
+        }),
+      )
+      .refine((attachments) => attachments.length > 0),
+  }),
+});
+const UNSUPPORTED_MEDIA_REPLY =
+  "I can't process this type of media yet. Please share an Instagram Reel using Instagram's Share button.";
 
 const EVENT_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DEDUPLICATION_RETENTION_MS = 36 * 60 * 60 * 1000;
@@ -61,6 +75,7 @@ export function createReelMessageProcessor(
     readonly video?: ExtractVideo;
   },
 ) {
+  const log = createDiagnosticLogger(options.log);
   const now = options.now ?? Date.now;
   const attempts = new Map<string, number>();
   const extractReel = createCachedReelExtractor(options);
@@ -83,89 +98,190 @@ export function createReelMessageProcessor(
         continue;
       }
       for (const rawMessage of entry.data.messaging) {
+        const incoming = incomingMessageSchema.safeParse(rawMessage);
+        if (
+          !incoming.success ||
+          !isIncomingMessage(incoming.data, account, now())
+        ) {
+          summary.ignored++;
+          log({
+            event: "instagram.reel_ignored",
+            reason: !incoming.success
+              ? "unsupported_event"
+              : "outgoing_or_outside_window",
+          });
+          continue;
+        }
         const event = reelMessageSchema.safeParse(rawMessage);
-        if (!event.success || !isIncomingReel(event.data, account, now())) {
+        const unsupported =
+          Boolean(incoming.data.message.is_unsupported) ||
+          (!event.success &&
+            Boolean(incoming.data.message.attachments?.length));
+        if (!event.success && !unsupported) {
           summary.ignored++;
           continue;
         }
-        const key = `${account}:${event.data.message.mid}`;
-        if (attempts.has(key)) {
-          summary.duplicate++;
-          continue;
-        }
-        attempts.set(key, now() + DEDUPLICATION_RETENTION_MS);
-        const recipient = event.data.sender.id;
+        await withDiagnosticContext({ reelId: randomUUID() }, async () => {
+          const key = `${account}:${incoming.data.message.mid}`;
+          if (attempts.has(key)) {
+            summary.duplicate++;
+            log({ event: "instagram.reel_ignored", reason: "duplicate" });
+            return;
+          }
+          attempts.set(key, now() + DEDUPLICATION_RETENTION_MS);
+          const recipient = incoming.data.sender.id;
+          if (unsupported) {
+            const reply = await sendText(recipient, UNSUPPORTED_MEDIA_REPLY);
+            log({
+              event: "instagram.reply",
+              stage: "unsupported_media",
+              outcome: reply.kind,
+            });
+            if (reply.kind === "sent") summary.sent++;
+            else summary.failed++;
+            return;
+          }
+          if (!event.success) return;
 
-        if (typeof messenger !== "function") {
-          await messenger.reactToMessage(
-            event.data.sender.id,
-            event.data.message.mid,
-          );
-        }
-
-        const first = await sendText(
-          event.data.sender.id,
-          "Finding your locations…",
-        );
-        if (first.kind === "failed") {
-          summary.failed++;
-          continue;
-        }
-        summary.sent++;
-
-        const reel = event.data.message.attachments[0].payload;
-        const caption = reel.title
-          ? await extractReel(reel)
-          : { kind: "no-place" as const };
-        const { result, match } = await resolveReel(
-          reel,
-          caption,
-          options.match,
-          options.video,
-        );
-        if (result.kind === "extracted" && typeof messenger !== "function") {
-          const prepared = await preparePlaceCards(result.value, match);
-          for (const text of prepared.texts) await sendReply(text);
-          for (let offset = 0; offset < prepared.cards.length; offset += 10) {
-            const cards = prepared.cards.slice(offset, offset + 10);
-            const sent = await messenger.sendGenericTemplate(
+          if (typeof messenger !== "function") {
+            const reaction = await messenger.reactToMessage(
               event.data.sender.id,
-              cards.map((card) => card.element),
+              event.data.message.mid,
             );
-            switch (sent.kind) {
-              case "sent":
-                summary.sent++;
-                break;
-              case "failed":
-                summary.failed++;
-                for (const card of cards) await sendReply(card.fallback);
-                break;
-              default: {
-                const exhaustive: never = sent;
-                return exhaustive;
+            log({
+              event: "instagram.reply",
+              stage: "reaction",
+              outcome: reaction.kind,
+            });
+          }
+
+          const first = await sendText(
+            event.data.sender.id,
+            "Finding your locations…",
+          );
+          log({
+            event: "instagram.reply",
+            stage: "progress",
+            outcome: first.kind,
+          });
+          if (first.kind === "failed") {
+            summary.failed++;
+            return;
+          }
+          summary.sent++;
+
+          const reel = event.data.message.attachments[0].payload;
+          const extractionStarted = Date.now();
+          const caption = reel.title
+            ? await extractReel(reel)
+            : { kind: "no-place" as const };
+          log({
+            event: "instagram.caption_result",
+            outcome: caption.kind,
+            mentionCount:
+              caption.kind === "extracted" ? caption.value.mentions.length : 0,
+            captionPresent: reel.title ? 1 : 0,
+            reason:
+              caption.kind === "invalid-output"
+                ? (caption.reason ?? "invalid_output")
+                : "completed",
+            durationMs: Date.now() - extractionStarted,
+          });
+          const { result, match } = await resolveReel(
+            reel,
+            caption,
+            options.match,
+            options.video,
+            log,
+          );
+          if (result.kind === "extracted" && typeof messenger !== "function") {
+            const prepared = await preparePlaceCards(result.value, match, log);
+            log({
+              event: "instagram.cards_prepared",
+              cardCount: prepared.cards.length,
+              photoCount: prepared.cards.filter(
+                (card) => card.element.image_url,
+              ).length,
+            });
+            const unverifiedNames = new Set<string>();
+            for (const text of prepared.texts) await sendReply(text);
+            for (let offset = 0; offset < prepared.cards.length; offset += 10) {
+              const cards = prepared.cards.slice(offset, offset + 10);
+              const sent = await messenger.sendGenericTemplate(
+                event.data.sender.id,
+                cards.map((card) => card.element),
+              );
+              log({
+                event: "instagram.reply",
+                stage: "carousel",
+                outcome: sent.kind,
+                cardCount: cards.length,
+                batchIndex: offset / 10 + 1,
+                reason: sent.kind === "failed" ? sent.reason : "completed",
+              });
+              switch (sent.kind) {
+                case "sent":
+                  summary.sent++;
+                  for (const card of cards) {
+                    if (card.unverifiedName)
+                      unverifiedNames.add(card.unverifiedName);
+                  }
+                  break;
+                case "failed":
+                  summary.failed++;
+                  for (const card of cards) {
+                    if (await sendReply(card.fallback)) {
+                      if (card.unverifiedName)
+                        unverifiedNames.add(card.unverifiedName);
+                    }
+                  }
+                  break;
+                default: {
+                  const exhaustive: never = sent;
+                  return exhaustive;
+                }
               }
             }
-          }
-          continue;
-        }
-        for (const text of formatExtractionReply(result)) {
-          const sent = await sendText(event.data.sender.id, text);
-          if (sent.kind === "sent") summary.sent++;
-          else summary.failed++;
-        }
-
-        async function sendReply(text: string) {
-          let success = true;
-          for (const part of splitMessageText(text)) {
-            const sent = await sendText(recipient, part);
-            if (sent.kind === "sent") summary.sent++;
-            else {
-              summary.failed++;
-              success = false;
+            if (unverifiedNames.size) {
+              await sendReply(
+                `Not verified: ${[...unverifiedNames].join("; ")}. Please double-check these locations before you go.`,
+                "verification_note",
+              );
             }
+            return;
           }
-          return success;
-        }
+          for (const text of formatExtractionReply(result)) {
+            const sent = await sendText(event.data.sender.id, text);
+            log({
+              event: "instagram.reply",
+              stage: "extraction_result",
+              outcome: sent.kind,
+            });
+            if (sent.kind === "sent") summary.sent++;
+            else summary.failed++;
+          }
+
+          async function sendReply(
+            text: string,
+            stage: "text_fallback" | "verification_note" = "text_fallback",
+          ) {
+            let success = true;
+            for (const part of splitMessageText(text)) {
+              const sent = await sendText(recipient, part);
+              log({
+                event: "instagram.reply",
+                stage,
+                outcome: sent.kind,
+              });
+              if (sent.kind === "sent") summary.sent++;
+              else {
+                summary.failed++;
+                success = false;
+              }
+            }
+            return success;
+          }
+        });
       }
     }
     return summary;
@@ -181,8 +297,8 @@ function removeExpiredAttempts(
   }
 }
 
-function isIncomingReel(
-  event: z.infer<typeof reelMessageSchema>,
+function isIncomingMessage(
+  event: z.infer<typeof incomingMessageSchema>,
   account: InstagramId,
   timestamp: number,
 ) {

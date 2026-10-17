@@ -1,5 +1,11 @@
 import ky, { NetworkError, TimeoutError, ResponseSizeError } from "ky";
 import { z } from "zod";
+import {
+  createDiagnosticLogger,
+  placeReference,
+  withDiagnosticContext,
+} from "../observability/diagnostics";
+import type { DiagnosticRecord } from "../observability/diagnostics";
 import type { PlaceMention } from "./caption";
 import {
   publicUrlSchema,
@@ -28,7 +34,9 @@ export function createGooglePlacesMatcher(
     readonly log?: (record: Readonly<Record<string, string | number>>) => void;
   } = {},
 ): MatchPlace {
-  const log = options.log ?? ((record) => console.warn(JSON.stringify(record)));
+  const log = createDiagnosticLogger(
+    options.log ?? ((record) => console.warn(JSON.stringify(record))),
+  );
   const diagnostic = (stage: string, reason: string, status = 0) =>
     log({ event: "places.request_failed", stage, reason, status });
   const client = http.extend({
@@ -39,8 +47,16 @@ export function createGooglePlacesMatcher(
     throwHttpErrors: false,
     maxResponseSize: 256 * 1024,
   });
-  return async (mention) => {
-    if (!mention.city && !mention.country) return { kind: "ambiguous" };
+  const matchPlace: MatchPlace = async (mention) => {
+    if (!mention.city && !mention.country) {
+      log({
+        event: "places.match_decision",
+        outcome: "ambiguous",
+        reason: "missing_geography",
+        possibleEnabled: 1,
+      });
+      return { kind: "ambiguous" };
+    }
     try {
       const response = await client.post(
         "https://places.googleapis.com/v1/places:searchText",
@@ -86,15 +102,28 @@ export function createGooglePlacesMatcher(
           });
         }
       }
+      log({
+        event: "places.search_result",
+        candidateCount: parsed.data.places.length,
+        validCount: places.length,
+        invalidCount: parsed.data.places.length - places.length,
+      });
       if (parsed.data.places.length > 0 && places.length === 0) {
         diagnostic("search", "response_schema");
         return { kind: "unavailable" };
       }
-      const result = selectPlaceMatch(mention, places);
+      const result = selectPlaceMatch(mention, places, {
+        allowPossible: true,
+        onDecision: (record) =>
+          log({ event: "places.match_decision", ...record }),
+      });
       if (result.kind !== "matched") return result;
       const selected = places.find((place) => place.id === result.place.id);
       // Invalid optional photo metadata must not discard a valid place.
+      let photoIndex = 0;
       for (const rawPhoto of selected?.photos.slice(0, 3) ?? []) {
+        photoIndex++;
+        log({ event: "places.photo_attempt", photoIndex });
         const photo = photoSchema.safeParse(rawPhoto);
         if (!photo.success) {
           diagnostic("photo", "metadata_schema");
@@ -102,6 +131,13 @@ export function createGooglePlacesMatcher(
         }
         const imageUrl = await loadPhoto(photo.data.name);
         if (imageUrl) {
+          log({
+            event: "places.photo_result",
+            outcome: "available",
+            photoIndex,
+            sourceLink: photo.data.googleMapsUri ? 1 : 0,
+            authorCount: photo.data.authorAttributions.length,
+          });
           return {
             kind: "matched",
             place: {
@@ -114,6 +150,14 @@ export function createGooglePlacesMatcher(
           };
         }
       }
+      log({
+        event: "places.photo_result",
+        outcome: "omitted",
+        reason: selected?.photos.length
+          ? "all_photos_failed"
+          : "no_photo_metadata",
+        attempted: photoIndex,
+      });
       return { kind: "no-photo", place: result.place };
     } catch (error) {
       if (
@@ -131,6 +175,22 @@ export function createGooglePlacesMatcher(
       throw error;
     }
   };
+
+  return (mention) =>
+    withDiagnosticContext({ placeRef: placeReference(mention) }, async () => {
+      const started = Date.now();
+      const result = await matchPlace(mention);
+      log({
+        event: "places.match_completed",
+        outcome: result.kind,
+        confidence:
+          result.kind === "matched" || result.kind === "no-photo"
+            ? result.place.confidence
+            : "none",
+        durationMs: Date.now() - started,
+      });
+      return result;
+    });
 
   async function loadPhoto(name: string): Promise<string | undefined> {
     try {
@@ -168,21 +228,23 @@ export function createGooglePlacesMatcher(
 export function selectPlaceMatch(
   mention: PlaceMention,
   places: readonly GooglePlace[],
+  options: {
+    readonly allowPossible?: boolean;
+    readonly onDecision?: (record: DiagnosticRecord) => void;
+  } = {},
 ): PlaceMatchResult {
-  if (places.length === 0) return { kind: "not-found" };
-  if (!mention.city && !mention.country) return { kind: "ambiguous" };
   const unique = [
     ...new Map(places.map((place) => [place.id, place])).values(),
   ];
-  const ranked = unique
-    .filter((place) => geographicMatch(mention, place))
-    .filter(
-      (place) =>
-        !mention.addressHint ||
-        normalize(place.formattedAddress).includes(
-          normalize(mention.addressHint),
-        ),
-    )
+  const geographic = unique.filter((place) => geographicMatch(mention, place));
+  const addressed = geographic.filter(
+    (place) =>
+      !mention.addressHint ||
+      normalize(place.formattedAddress).includes(
+        normalize(mention.addressHint),
+      ),
+  );
+  const ranked = addressed
     .map((place) => ({
       place,
       score: nameScore(searchName(mention), place.displayName.text),
@@ -190,30 +252,63 @@ export function selectPlaceMatch(
     .sort((a, b) => b.score - a.score);
   const first = ranked[0];
   const second = ranked[1];
-  if (
-    !first ||
-    first.score < 0.8 ||
-    (second && first.score - second.score < 0.2)
-  )
-    return { kind: "ambiguous" };
-  const query = `${first.place.location.latitude},${first.place.location.longitude}`;
-  return {
-    kind: "matched",
-    place: {
-      id: first.place.id,
-      name: first.place.displayName.text,
-      address: first.place.formattedAddress,
-      confidence:
-        normalize(mention.name) === normalize(first.place.displayName.text)
-          ? "high"
-          : "medium",
-      links: {
-        googleMaps: `https://www.google.com/maps/search/?api=1&query=${query}&query_place_id=${encodeURIComponent(first.place.id)}`,
-        appleMaps: `https://maps.apple.com/?q=${query}&ll=${query}`,
-      },
-      attributions: first.place.attributions,
-    },
+  const report = (
+    result: PlaceMatchResult,
+    reason: string,
+  ): PlaceMatchResult => {
+    options.onDecision?.({
+      outcome: result.kind,
+      reason,
+      candidateCount: places.length,
+      uniqueCount: unique.length,
+      geographyCount: geographic.length,
+      addressCount: addressed.length,
+      topScore: Number((first?.score ?? 0).toFixed(3)),
+      runnerUpScore: Number((second?.score ?? 0).toFixed(3)),
+      scoreGap: Number(((first?.score ?? 0) - (second?.score ?? 0)).toFixed(3)),
+      nameThreshold: 0.8,
+      requiredGap: 0.2,
+      possibleEnabled: options.allowPossible ? 1 : 0,
+      cityPresent: mention.city ? 1 : 0,
+      countryPresent: mention.country ? 1 : 0,
+      addressHintPresent: mention.addressHint ? 1 : 0,
+    });
+    return result;
   };
+  if (!places.length) return report({ kind: "not-found" }, "no_candidates");
+  if (!mention.city && !mention.country)
+    return report({ kind: "ambiguous" }, "missing_geography");
+  if (!geographic.length)
+    return report({ kind: "ambiguous" }, "geography_conflict");
+  if (!addressed.length)
+    return report({ kind: "ambiguous" }, "address_conflict");
+  if (!first || first.score < 0.8)
+    return report({ kind: "ambiguous" }, "weak_name");
+  const uncertain = Boolean(second && first.score - second.score < 0.2);
+  if (uncertain && !options.allowPossible)
+    return report({ kind: "ambiguous" }, "competing_candidates");
+  const query = `${first.place.location.latitude},${first.place.location.longitude}`;
+  return report(
+    {
+      kind: "matched",
+      place: {
+        id: first.place.id,
+        name: first.place.displayName.text,
+        address: first.place.formattedAddress,
+        confidence: uncertain
+          ? "possible"
+          : normalize(mention.name) === normalize(first.place.displayName.text)
+            ? "high"
+            : "medium",
+        links: {
+          googleMaps: `https://www.google.com/maps/search/?api=1&query=${query}&query_place_id=${encodeURIComponent(first.place.id)}`,
+          appleMaps: `https://maps.apple.com/?q=${query}&ll=${query}`,
+        },
+        attributions: first.place.attributions,
+      },
+    },
+    uncertain ? "competing_candidates" : "accepted_unique",
+  );
 }
 
 function normalize(value: string) {

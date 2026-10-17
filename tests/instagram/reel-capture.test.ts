@@ -128,9 +128,12 @@ describe("signature-verified Reel capture", () => {
     const response = await test.deliver([event("reel", reel)]);
 
     expect(response.status).toBe(200);
-    expect(test.logs).toContainEqual({
-      event: "instagram.reel_capture_failed",
-      level: "error",
-    });
+    expect(test.logs).toContainEqual(
+      expect.objectContaining({
+        event: "instagram.reel_capture_failed",
+        level: "error",
+        requestId: expect.any(String),
+      }),
+    );
   });
 });

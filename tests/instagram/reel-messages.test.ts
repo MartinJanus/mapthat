@@ -56,11 +56,13 @@ function recordingMessenger(
   reactionResult: SendResult = { kind: "sent" },
 ) {
   const texts: string[] = [];
+  const deliveries: string[] = [];
   const cards: (readonly GenericElement[])[] = [];
   const reactions: { recipient: string; messageId: string }[] = [];
   const messenger: InstagramMessenger = {
     sendText: async (_, text) => {
       texts.push(text);
+      deliveries.push("text");
       return { kind: "sent" };
     },
     reactToMessage: async (recipient, messageId) => {
@@ -69,10 +71,11 @@ function recordingMessenger(
     },
     sendGenericTemplate: async (_, elements) => {
       cards.push(elements);
+      deliveries.push("carousel");
       return cardResult;
     },
   };
-  return { messenger, texts, cards, reactions };
+  return { messenger, texts, cards, reactions, deliveries };
 }
 
 describe("Instagram Reel replies", () => {
@@ -139,7 +142,8 @@ describe("Instagram Reel replies", () => {
       recorded.messenger,
     );
     expect(recorded.cards[0]).toHaveLength(2);
-    expect(recorded.texts).toHaveLength(3);
+    expect(recorded.texts).toHaveLength(4);
+    expect(recorded.texts[3]).toContain("Not verified: Cafe One; Cafe Two");
     expect(recorded.texts[1]).toContain("Cafe One");
     expect(recorded.texts[2]).toContain("Cafe Two");
   });
@@ -205,7 +209,7 @@ describe("Instagram Reel replies", () => {
     expect(recorded.reactions).toEqual([
       { recipient: "20002", messageId: "one" },
     ]);
-    expect(summary).toEqual({ sent: 2, failed: 0, ignored: 0, duplicate: 0 });
+    expect(summary).toEqual({ sent: 3, failed: 0, ignored: 0, duplicate: 0 });
     expect(recorded.cards).toHaveLength(1);
     expect(recorded.cards[0]).toHaveLength(1);
     expect(recorded.cards[0]?.[0]).toMatchObject({
@@ -258,14 +262,15 @@ describe("Instagram Reel replies", () => {
         account,
         recorded.messenger,
       );
-      expect(recorded.texts).toHaveLength(2);
+      expect(recorded.texts).toHaveLength(3);
+      expect(recorded.texts[2]).toContain("Not verified:");
       expect(recorded.texts[1]).toContain(
         "Google Maps: https://www.google.com/maps/search/",
       );
       expect(recorded.texts[1]).toContain(
         "Apple Maps: https://maps.apple.com/",
       );
-      expect(summary).toMatchObject({ sent: 2, failed: 1 });
+      expect(summary).toMatchObject({ sent: 3, failed: 1 });
     },
   );
 
@@ -317,7 +322,10 @@ describe("Instagram Reel replies", () => {
       });
       await process(batch([event("unmatched")]), account, recorded.messenger);
       expect(recorded.cards[0]).toHaveLength(1);
-      expect(recorded.texts).toEqual(["Finding your locations…"]);
+      expect(recorded.texts).toEqual([
+        "Finding your locations…",
+        "Not verified: Yat Lok Restaurant. Please double-check these locations before you go.",
+      ]);
       expect(recorded.cards[0]?.[0]?.subtitle).toContain("Search results");
       expect(recorded.cards[0]?.[0]?.image_url).toBeUndefined();
       expect(recorded.cards[0]?.[0]?.buttons).toHaveLength(2);
@@ -392,7 +400,7 @@ describe("Instagram Reel replies", () => {
     expect(extractions).toBe(1);
   });
 
-  it("ignores non-Reel attachments", async () => {
+  it("replies once to non-Reel attachments", async () => {
     const process = createReelMessageProcessor({
       now: () => timestamp + 1000,
       extract: async () => extracted,
@@ -408,7 +416,7 @@ describe("Instagram Reel replies", () => {
       kind: "sent",
     }));
 
-    expect(summary).toEqual({ sent: 0, failed: 0, ignored: 1, duplicate: 0 });
+    expect(summary).toEqual({ sent: 1, failed: 0, ignored: 0, duplicate: 0 });
   });
 });
 
@@ -455,5 +463,226 @@ describe("captionless media intake", () => {
     expect(recorded.cards[0]?.[0]).toMatchObject({
       image_url: "https://images.example.test/verified.jpg",
     });
+  });
+});
+
+describe("unsupported media replies", () => {
+  it.each(["image", "video", "ig_post", "unknown"])(
+    "responds once to incoming %s without extraction or reactions",
+    async (type) => {
+      const recorded = recordingMessenger();
+      let extractions = 0;
+      const process = createReelMessageProcessor({
+        now: () => timestamp + 1000,
+        extract: async () => {
+          extractions++;
+          return extracted;
+        },
+      });
+      const input = batch([
+        {
+          ...event("unsupported"),
+          message: { mid: "unsupported", attachments: [{ type }] },
+        },
+      ]);
+      await process(input, account, recorded.messenger);
+      const duplicate = await process(input, account, recorded.messenger);
+      expect(recorded.texts).toHaveLength(1);
+      expect(recorded.texts[0]).toContain("Instagram Reel");
+      expect(recorded.texts[0]).not.toContain("Finding");
+      expect(recorded.cards).toEqual([]);
+      expect(recorded.reactions).toEqual([]);
+      expect(extractions).toBe(0);
+      expect(duplicate.duplicate).toBe(1);
+    },
+  );
+
+  it("responds to Meta's unsupported flag without attachments", async () => {
+    const recorded = recordingMessenger();
+    const process = createReelMessageProcessor({
+      now: () => timestamp + 1000,
+      extract: async () => extracted,
+    });
+    await process(
+      batch([
+        {
+          ...event("flagged"),
+          message: { mid: "flagged", is_unsupported: true },
+        },
+      ]),
+      account,
+      recorded.messenger,
+    );
+    expect(recorded.texts).toHaveLength(1);
+    expect(recorded.texts[0]).toContain("can't process");
+  });
+
+  it("does not reply to echoes, self/deleted messages, stale events or receipts", async () => {
+    const recorded = recordingMessenger();
+    const process = createReelMessageProcessor({
+      now: () => timestamp + 1000,
+      extract: async () => extracted,
+    });
+    const unsupported = { mid: "ignored", attachments: [{ type: "image" }] };
+    await process(
+      batch([
+        { ...event("echo"), message: { ...unsupported, is_echo: true } },
+        { ...event("self"), message: { ...unsupported, is_self: true } },
+        { ...event("deleted"), message: { ...unsupported, is_deleted: true } },
+        { ...event("own"), sender: { id: account }, message: unsupported },
+        { ...event("wrong"), recipient: { id: "99999" }, message: unsupported },
+        {
+          ...event("stale"),
+          timestamp: timestamp - 86400000,
+          message: unsupported,
+        },
+        {
+          ...event("future"),
+          timestamp: timestamp + 10000,
+          message: unsupported,
+        },
+        {
+          sender: { id: "20002" },
+          recipient: { id: account },
+          timestamp,
+          read: { watermark: timestamp },
+        },
+      ]),
+      account,
+      recorded.messenger,
+    );
+    expect(recorded.texts).toEqual([]);
+    expect(recorded.reactions).toEqual([]);
+  });
+
+  it("processes a usable Reel in mixed attachments", async () => {
+    const recorded = recordingMessenger();
+    const process = createReelMessageProcessor({
+      now: () => timestamp + 1000,
+      extract: async () => extracted,
+    });
+    const incoming = event("mixed");
+    await process(
+      batch([
+        {
+          ...incoming,
+          message: {
+            ...incoming.message,
+            attachments: [{ type: "image" }, ...incoming.message.attachments],
+          },
+        },
+      ]),
+      account,
+      recorded.messenger,
+    );
+    expect(recorded.cards).toHaveLength(1);
+    expect(recorded.texts.some((text) => text.includes("can't process"))).toBe(
+      false,
+    );
+  });
+});
+
+describe("verification note after locations", () => {
+  it("lists only uncertain locations after all carousel batches", async () => {
+    const recorded = recordingMessenger();
+    const names = [
+      "Confirmed",
+      "Likely",
+      "Possible",
+      "Search",
+      ...Array.from({ length: 7 }, (_, i) => "Confirmed " + i),
+    ];
+    const mentions = names.map((name) => ({
+      ...extracted.value.mentions[0],
+      name,
+    }));
+    const process = createReelMessageProcessor({
+      now: () => timestamp + 1000,
+      extract: async () => ({ kind: "extracted", value: { mentions } }),
+      match: async (mention) =>
+        mention.name === "Search"
+          ? { kind: "ambiguous" }
+          : {
+              kind: "no-photo",
+              place: {
+                id: googlePlaceIdSchema.parse(mention.name),
+                name: mention.name,
+                address: "Hong Kong",
+                confidence:
+                  mention.name === "Likely"
+                    ? "medium"
+                    : mention.name === "Possible"
+                      ? "possible"
+                      : "high",
+                attributions: [],
+                links: {
+                  googleMaps: "https://maps.google.com/?q=22,114",
+                  appleMaps: "https://maps.apple.com/?q=22,114",
+                },
+              },
+            },
+    });
+    const input = batch([event("note")]);
+    await process(input, account, recorded.messenger);
+    await process(input, account, recorded.messenger);
+    expect(recorded.cards.map((cards) => cards.length)).toEqual([10, 1]);
+    expect(recorded.deliveries).toEqual([
+      "text",
+      "carousel",
+      "carousel",
+      "text",
+    ]);
+    expect(recorded.texts[1]).toBe(
+      "Not verified: Likely; Possible; Search. Please double-check these locations before you go.",
+    );
+    expect(recorded.texts[1]).not.toContain("Confirmed");
+    expect(
+      recorded.cards.flat().every((card) => card.buttons.length === 2),
+    ).toBe(true);
+  });
+
+  it("does not add a note when all matches are confident", async () => {
+    const recorded = recordingMessenger();
+    const process = createReelMessageProcessor({
+      now: () => timestamp + 1000,
+      extract: async () => extracted,
+      match: async () => ({
+        kind: "no-photo",
+        place: {
+          id: googlePlaceIdSchema.parse("confirmed"),
+          name: "Confirmed",
+          address: "Hong Kong",
+          confidence: "high",
+          attributions: [],
+          links: {
+            googleMaps: "https://maps.google.com/?q=22,114",
+            appleMaps: "https://maps.apple.com/?q=22,114",
+          },
+        },
+      }),
+    });
+    await process(batch([event("confident")]), account, recorded.messenger);
+    expect(recorded.texts).toEqual(["Finding your locations…"]);
+  });
+
+  it("does not append a note for locations whose card and fallback both failed", async () => {
+    const recorded = recordingMessenger({ kind: "failed", reason: "http" });
+    const texts: string[] = [];
+    const messenger: InstagramMessenger = {
+      ...recorded.messenger,
+      sendText: async (_, text) => {
+        texts.push(text);
+        return texts.length === 1
+          ? { kind: "sent" }
+          : { kind: "failed", reason: "http" };
+      },
+    };
+    const process = createReelMessageProcessor({
+      now: () => timestamp + 1000,
+      extract: async () => extracted,
+    });
+    await process(batch([event("undelivered")]), account, messenger);
+    expect(texts).toHaveLength(2);
+    expect(texts.some((text) => text.startsWith("Not verified:"))).toBe(false);
   });
 });
