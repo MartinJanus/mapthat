@@ -1,3 +1,9 @@
+import { createSupabaseRequestStore } from "../tracking/supabase";
+import {
+  recordRequestEvent,
+  TrackingUnavailableError,
+} from "../tracking/requests";
+import type { RequestStore } from "../tracking/requests";
 import { randomUUID, createHmac, timingSafeEqual } from "node:crypto";
 import { verifyConfigSchema, webhookConfigSchema } from "./config";
 import { createInstagramSender, createInstagramMessenger } from "./client";
@@ -33,6 +39,7 @@ type WebhookBody =
 export function createWebhookHandlers(options: {
   readonly environment: () => unknown;
   readonly processMessages?: ReturnType<typeof createMessageProcessor>;
+  readonly requestStore?: RequestStore;
   readonly sender?: typeof createInstagramSender;
   readonly messenger?: typeof createInstagramMessenger;
   readonly extract?: (caption: string) => Promise<CaptionExtractionResult>;
@@ -45,9 +52,12 @@ export function createWebhookHandlers(options: {
   const processMessages = options.processMessages ?? createMessageProcessor();
   const sender = options.sender ?? createInstagramSender;
   const captureReel = options.captureReel ?? createReelCapture();
-  const log = createDiagnosticLogger(
-    options.log ?? ((record) => console.info(JSON.stringify(record))),
-  );
+  const sink =
+    options.log ?? ((record) => console.info(JSON.stringify(record)));
+  const log = createDiagnosticLogger((record) => {
+    recordRequestEvent(record);
+    sink(record);
+  });
   const environment = options.environment();
   const extractionConfig = geminiConfigSchema.safeParse(environment);
   const placesConfig = googlePlacesConfigSchema.safeParse(
@@ -60,6 +70,8 @@ export function createWebhookHandlers(options: {
       : undefined);
   const processReels = createReelMessageProcessor({
     log,
+    requestStore:
+      options.requestStore ?? createSupabaseRequestStore(environment),
     cache: options.extractionCache ?? createFileExtractionCache(),
     version: `caption-v3:${extractionConfig.success ? extractionConfig.data.GEMINI_MODEL : "default"}`,
     onCacheError: () =>
@@ -204,6 +216,10 @@ export function createWebhookHandlers(options: {
           });
         } catch (error) {
           if (!(error instanceof Error)) throw error;
+          if (error instanceof TrackingUnavailableError) {
+            log({ event: "instagram.persistence_failed", level: "error" });
+            return reply("Request persistence unavailable", 503);
+          }
           log({ event: "instagram.reel_processing_failed", level: "error" });
         }
         const summary = await processMessages(

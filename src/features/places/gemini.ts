@@ -1,3 +1,4 @@
+import { measureProviderCall } from "../tracking/requests";
 import { GoogleGenAI } from "@google/genai";
 import { z } from "zod";
 import { captionExtractionSchema, parseCaptionExtraction } from "./caption";
@@ -41,16 +42,29 @@ function createGeminiGenerator(config: GeminiConfig): GenerateJson {
   const responseJsonSchema = z.toJSONSchema(captionExtractionSchema);
 
   return async (caption) => {
-    const response = await client.models.generateContent({
-      model: config.GEMINI_MODEL,
-      contents: buildCaptionPrompt(caption),
-      config: {
-        responseMimeType: "application/json",
-        responseJsonSchema,
-        temperature: 0,
-        maxOutputTokens: 8192,
-      },
-    });
+    const response = await measureProviderCall(
+      "gemini",
+      "caption",
+      () =>
+        client.models.generateContent({
+          model: config.GEMINI_MODEL,
+          contents: buildCaptionPrompt(caption),
+          config: {
+            responseMimeType: "application/json",
+            responseJsonSchema,
+            temperature: 0,
+            maxOutputTokens: 8192,
+          },
+        }),
+      (result) => ({
+        model: result.modelVersion ?? config.GEMINI_MODEL,
+        input_tokens: result.usageMetadata?.promptTokenCount,
+        output_tokens: result.usageMetadata?.candidatesTokenCount,
+        cached_tokens: result.usageMetadata?.cachedContentTokenCount,
+        thought_tokens: result.usageMetadata?.thoughtsTokenCount,
+        total_tokens: result.usageMetadata?.totalTokenCount,
+      }),
+    );
     return response.text;
   };
 }

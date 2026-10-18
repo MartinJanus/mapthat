@@ -1,3 +1,4 @@
+import { measureProviderCall } from "../tracking/requests";
 import ky, { NetworkError, TimeoutError, ResponseSizeError } from "ky";
 import { z } from "zod";
 import {
@@ -58,26 +59,29 @@ export function createGooglePlacesMatcher(
       return { kind: "ambiguous" };
     }
     try {
-      const response = await client.post(
-        "https://places.googleapis.com/v1/places:searchText",
-        {
-          headers: {
-            "X-Goog-FieldMask":
-              "places.id,places.displayName,places.formattedAddress,places.location,places.addressComponents,places.photos,places.attributions",
-          },
-          json: {
-            textQuery: [
-              searchName(mention),
-              mention.addressHint,
-              mention.city,
-              mention.country,
-            ]
-              .filter(Boolean)
-              .join(", "),
-            pageSize: 20,
-            languageCode: "en",
-          },
-        },
+      const response = await measureProviderCall(
+        "google_places",
+        "search",
+        () =>
+          client.post("https://places.googleapis.com/v1/places:searchText", {
+            headers: {
+              "X-Goog-FieldMask":
+                "places.id,places.displayName,places.formattedAddress,places.location,places.addressComponents,places.photos,places.attributions",
+            },
+            json: {
+              textQuery: [
+                searchName(mention),
+                mention.addressHint,
+                mention.city,
+                mention.country,
+              ]
+                .filter(Boolean)
+                .join(", "),
+              pageSize: 20,
+              languageCode: "en",
+            },
+          }),
+        (result) => ({ succeeded: result.ok, http_status: result.status }),
       );
       if (!response.ok) {
         diagnostic("search", "http", response.status);
@@ -194,9 +198,14 @@ export function createGooglePlacesMatcher(
 
   async function loadPhoto(name: string): Promise<string | undefined> {
     try {
-      const response = await client.get(
-        `https://places.googleapis.com/v1/${name}/media`,
-        { searchParams: { maxWidthPx: 800, skipHttpRedirect: true } },
+      const response = await measureProviderCall(
+        "google_places",
+        "photo",
+        () =>
+          client.get(`https://places.googleapis.com/v1/${name}/media`, {
+            searchParams: { maxWidthPx: 800, skipHttpRedirect: true },
+          }),
+        (result) => ({ succeeded: result.ok, http_status: result.status }),
       );
       if (!response.ok) {
         diagnostic("photo", "http", response.status);
@@ -262,6 +271,12 @@ export function selectPlaceMatch(
       candidateCount: places.length,
       uniqueCount: unique.length,
       geographyCount: geographic.length,
+      cityMatchCount: unique.filter((place) =>
+        geographicFieldMatch(mention, place, "city"),
+      ).length,
+      countryMatchCount: unique.filter((place) =>
+        geographicFieldMatch(mention, place, "country"),
+      ).length,
       addressCount: addressed.length,
       topScore: Number((first?.score ?? 0).toFixed(3)),
       runnerUpScore: Number((second?.score ?? 0).toFixed(3)),
@@ -361,35 +376,62 @@ function nameScore(expected: string, actual: string) {
   return Math.max(overlap, sameCore ? 0.92 : 0, compactMatch ? 0.92 : 0);
 }
 
+const localityComponentTypes = new Set([
+  "locality",
+  "postal_town",
+  "administrative_area_level_1",
+  "administrative_area_level_2",
+  "administrative_area_level_3",
+  "sublocality",
+  "sublocality_level_1",
+  "sublocality_level_2",
+  "sublocality_level_3",
+  "sublocality_level_4",
+  "sublocality_level_5",
+  "neighborhood",
+]);
+
 function geographicMatch(mention: PlaceMention, place: GooglePlace) {
-  return ([mention.city, mention.country] as const).every(
-    (value, index) =>
-      !value ||
-      place.addressComponents.some(
-        (component) =>
-          component.types.some((type) =>
-            index === 1
-              ? type === "country"
-              : [
-                  "locality",
-                  "postal_town",
-                  "administrative_area_level_1",
-                  "sublocality",
-                  // Hong Kong can be represented by a country component.
-                  ...(geography(value) === "hong kong" ? ["country"] : []),
-                ].includes(type),
-          ) &&
-          [component.longText, component.shortText].some(
-            (text) =>
-              text &&
-              (geography(text) === geography(value) ||
-                (index === 1 &&
-                  geography(mention.city ?? "") === "hong kong" &&
-                  normalize(value) === "china" &&
-                  geography(text) === "hong kong")),
-          ),
+  return (
+    geographicFieldMatch(mention, place, "city") &&
+    geographicFieldMatch(mention, place, "country")
+  );
+}
+
+function geographicFieldMatch(
+  mention: PlaceMention,
+  place: GooglePlace,
+  field: "city" | "country",
+) {
+  const value = mention[field];
+  if (!value) return true;
+  const country = field === "country";
+  const normalized = country ? geography(value) : localityGeography(value);
+  return place.addressComponents.some(
+    (component) =>
+      component.types.some((type) =>
+        country
+          ? type === "country"
+          : localityComponentTypes.has(type) ||
+            // Hong Kong itself can be represented by a country component.
+            (type === "country" && geography(value) === "hong kong"),
+      ) &&
+      [component.longText, component.shortText].some(
+        (text) =>
+          text &&
+          ((country ? geography(text) : localityGeography(text)) ===
+            normalized ||
+            (country &&
+              geography(mention.city ?? "") === "hong kong" &&
+              normalize(value) === "china" &&
+              geography(text) === "hong kong")),
       ),
   );
+}
+
+function localityGeography(value: string) {
+  // Optional administrative label, not a substring or fuzzy location match.
+  return geography(value).replace(/\s+district$/u, "");
 }
 
 function geography(value: string) {
