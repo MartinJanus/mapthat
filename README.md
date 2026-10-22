@@ -8,7 +8,7 @@
 
 An independent, work-in-progress project exploring caption extraction, place matching, and a clean Instagram DM experience.
 
-[Instagram @mapthat.app](https://www.instagram.com/mapthat.app/) · [Roadmap](https://github.com/MartinJanus/mapthat/issues)
+[Instagram @mapthat.app](https://www.instagram.com/mapthatapp/) · [Roadmap](https://github.com/MartinJanus/mapthat/issues)
 
 </div>
 
