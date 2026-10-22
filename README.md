@@ -1,24 +1,66 @@
+<div align="center">
+
+<img src="public/mapthat-app-icon.png" alt="MapThat app icon" width="112" />
+
 # MapThat
 
-MapThat will turn places mentioned in Instagram videos into map results. This
-repository provides a Next.js App Router foundation and an Instagram prototype
-that extracts places from Reel captions and replies with Maps-button cards.
+**Turn places in Instagram Reels into useful map links.**
 
-## Requirements
+An independent, work-in-progress project exploring caption extraction, place matching, and a clean Instagram DM experience.
 
-- Node.js **24.21.0**, recorded in `.nvmrc`.
-- npm, included with Node.js. Use the committed `package-lock.json` with `npm ci`.
-- Git. For Windows development, run the commands inside WSL2 with a Linux
-  distribution such as Ubuntu, using Node installed inside WSL.
+[Instagram @mapthat.app](https://www.instagram.com/mapthat.app/) · [Roadmap](https://github.com/MartinJanus/mapthat/issues)
 
-The commands below assume [nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-is installed in your Linux shell. Another Node version manager is fine if it
-selects the version in `.nvmrc`. Keep the checkout in the WSL Linux filesystem
-(for example, under `~/repos`) for faster file watching and installs.
+</div>
 
-## Setup and development
+> **Status: Work in progress.** The Instagram bot is deployed and the caption-to-place-card flow has been tested. Matching accuracy, safe beta limits, privacy controls, job recovery, and the destination discovery website are still being developed. Results can be uncertain; check a suggested place before travelling.
 
-From a fresh checkout:
+## What it does
+
+Send a Reel to MapThat in an Instagram DM. For supported messages, the bot extracts place mentions, searches Google Places for candidate venues, and replies with a photo card and direct **Google Maps** and **Apple Maps** buttons. When a match is uncertain, the result is labelled as a possible or likely match.
+
+The current flow is caption-first. An optional Gemini video fallback exists in the code but is disabled in the deployed environment. The bot does not promise to identify every Reel or every venue branch correctly.
+
+## How it works
+
+```mermaid
+flowchart LR
+    U[Person shares a Reel in Instagram DM] --> META[Meta Instagram Messaging]
+    META --> WH[Next.js webhook]
+    WH --> VERIFY[Verify signature and claim message]
+    VERIFY <--> DB[(Supabase Postgres)]
+    VERIFY --> CAP[Read supported Reel caption]
+    CAP --> GEM[Gemini place extraction]
+    CAP -. optional, disabled in production .-> VID[Gemini video fallback]
+    GEM --> MATCH[Google Places search and branch matching]
+    VID --> MATCH
+    MATCH --> CARDS[Photo cards with confidence labels]
+    CARDS --> REPLY[Google Maps + Apple Maps buttons]
+    REPLY --> META
+    WH -. record status, provider usage and safe diagnostics .-> DB
+    MATCH -. request photo with attribution .-> GP[Google Places API]
+    GP --> CARDS
+```
+
+See [Architecture](docs/architecture.md) for the boundaries, data flow, and current limitations.
+
+## Technology
+
+- **Next.js App Router, React, TypeScript** — webhook endpoint and application foundation.
+- **Instagram Messaging API** — receives shared Reel messages and sends replies.
+- **Gemini** — extracts place mentions from supported captions; optional video fallback is behind a feature flag.
+- **Google Places API (New)** — finds candidate venues and supplies place photos.
+- **Supabase Postgres** — stores request identity, extracted place references, provider usage, and allowlisted diagnostic events.
+- **Railway** — hosts the current application.
+- **Vitest, ESLint, Prettier, GitHub Actions** — tests and automated checks.
+
+## Development
+
+### Requirements
+
+- Node.js **24.21.0** (see `.nvmrc`)
+- npm
+
+### Run locally
 
 ```bash
 git clone https://github.com/MartinJanus/mapthat.git
@@ -29,94 +71,33 @@ npm ci
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser. Edit the
-homepage in `src/app/page.tsx`; the development server updates it automatically.
-To use another port, run `npm run dev -- --port 3001`.
+Open [http://localhost:3000](http://localhost:3000). The homepage and automated tests work without provider credentials. To test the Instagram integration locally, configure the server-side variables described in [`.env.example`](.env.example) in an ignored `.env.local` file and configure a Meta webhook that can reach your local server over HTTPS. Never commit real credentials.
 
-The homepage, health endpoint, and ordinary checks need no credentials. The
-Instagram webhook requires server-side configuration listed in `.env.example`.
-Populate those values privately in ignored `.env.local` (or `.env`); never commit
-credentials or expose them through public responses. Configuration is validated
-only when the webhook is called, so builds and tests need no live Meta account.
-
-See [the Instagram connectivity experiment](docs/instagram-connectivity.md) for
-Meta setup, HTTPS callback verification, limitations, and the real-account test.
-See [the shared-Reel capture guide](docs/instagram-reel-capture.md)
-to inspect the raw webhook JSON from any Reel share.
-Caption interpretation uses Gemini only when the extraction flow is enabled;
-configure `GEMINI_API_KEY` and optionally `GEMINI_MODEL` in ignored `.env.local`.
-Configure `GOOGLE_PLACES_API_KEY` for place matching and photo cards; without it,
-cards use explicitly unverified caption search links. See the Reel guide for
-confidence rules, card limits, attribution, and text fallbacks.
-
-## Commands
-
-| Command                | Purpose                                                     |
-| ---------------------- | ----------------------------------------------------------- |
-| `npm run dev`          | Start the development server                                |
-| `npm run typecheck`    | Check strict TypeScript without emitting files              |
-| `npm run lint`         | Run ESLint; warnings fail the check                         |
-| `npm run format:check` | Check formatting without modifying files                    |
-| `npm run format`       | Apply Prettier formatting                                   |
-| `npm test`             | Run the tests once                                          |
-| `npm run test:watch`   | Run tests in watch mode                                     |
-| `npm run build`        | Create a production build                                   |
-| `npm start`            | Serve the existing production build                         |
-| `npm run check`        | Run formatting, lint, type, test, and build checks in order |
-
-## Verification
-
-After `npm ci`, run the complete check:
+### Checks
 
 ```bash
 npm run check
-npm start
 ```
 
-With the production server running, open the homepage and run this in a second
-terminal:
+This runs formatting, lint, TypeScript, tests, and a production build. Tests use fixtures and do not call paid providers.
 
-```bash
-curl -i http://localhost:3000/api/health
-```
+## Data and privacy notes
 
-Expect HTTP **200**, `Content-Type: application/json`,
-`Cache-Control: no-store`, and the body `{"status":"ok"}`. The response is a
-liveness check, with no secrets or internal configuration. It does not check
-external providers. Unsupported methods such as `POST` return HTTP **405**.
-Stop the server with Ctrl+C.
+Supabase request tracking is server-side. It stores pseudonymous request references, extracted mentions and selected Place IDs, usage metadata, and a bounded set of allowlisted events. It does not store Google photos or copy Google listing content into the database. See [Supabase tracking](docs/supabase-tracking.md).
 
-The Vitest test in `tests/api/health.test.ts` calls the real route handler
-and verifies its HTTP response status, headers, and exact JSON body. It needs no
-running server, paid services, or live credentials. The curl check additionally
-verifies routing through a running Next.js server.
+**Current limitation:** the development Reel-capture helper is invoked by the webhook by default and can write raw webhook payloads, including media URLs, to local ignored files. Do not enable this bot for broad use until capture is disabled by default and retention/deletion behavior is addressed. Follow [issue #19](https://github.com/MartinJanus/mapthat/issues/19).
 
-## Application structure
+## Current limitations and next steps
 
-- `src/app/page.tsx`: minimal homepage.
-- `src/app/layout.tsx` and `src/app/globals.css`: shared layout and global styles.
-- `src/app/api/health/route.ts`: health HTTP handler.
-- `src/app/api/instagram/webhook/route.ts`: signed Instagram webhook entry point.
-- `src/features/instagram/`: configuration, event processing, and API adapter.
-- `tests/api/`: HTTP entry-point tests discovered by Vitest.
-- `tests/instagram/`: event-processing, authentication, and API-adapter tests.
+- Match quality needs evaluation against a manually checked set of Reels, including branch ambiguity and multilingual names.
+- Processing currently runs during the webhook request. A durable queue, restart recovery, and delivery-aware retries are not implemented.
+- Usage limits and an emergency pause are not yet implemented.
+- There is no admin dashboard, public discovery site, or external extraction API yet.
+- Reel media access depends on the data Meta supplies and the permissions available to the app; unsupported or inaccessible media can’t be assumed to work.
+- The project has no license yet. Public code visibility alone does not grant permission to reuse it.
 
-As product behavior appears, put reusable application logic in feature modules
-outside page components and HTTP handlers. Those entry points should call that
-logic so the Instagram bot, discovery pages, and extraction API can reuse it.
-Introduce modules when there is behavior to own rather than creating empty
-service layers now.
+The active roadmap starts with [usage limits](https://github.com/MartinJanus/mapthat/issues/18), [privacy and retention](https://github.com/MartinJanus/mapthat/issues/19), [matching accuracy](https://github.com/MartinJanus/mapthat/issues/20), and a [representative Reel benchmark](https://github.com/MartinJanus/mapthat/issues/21). See [all open issues](https://github.com/MartinJanus/mapthat/issues).
 
-The Instagram integration includes the fixed-reply connectivity experiment and
-caption-based place extraction with reactions, Maps-button cards, optional Google
-Places matching/photos, and text fallbacks. Optional video/audio fallback and backend-only Supabase request tracking are also
-available. See [Supabase tracking setup](docs/supabase-tracking.md) for configuration,
-reporting views and reliability limits. Background jobs, production deployment,
-a web dashboard and discovery rankings remain next steps.
+## Project notes
 
-## Project workflow and scope
-
-- [Prototype scope and feasibility questions](docs/scope.md)
-- [Contribution workflow, action pinning, and secrets](CONTRIBUTING.md)
-- [Architecture-decision template](docs/decisions/template.md)
-- [CI verification record](docs/ci-verification.md)
+This project is being built incrementally, with small issues, automated tests, CI, and documented trade-offs. The code and backlog reflect a prototype in active development; contributions and feedback are welcome, but setup still requires Meta, Google, Gemini, and Supabase accounts for a full live integration.
