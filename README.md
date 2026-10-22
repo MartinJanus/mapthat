@@ -30,7 +30,7 @@ flowchart LR
     VERIFY <--> DB[(Supabase Postgres)]
     VERIFY --> CAP[Read supported Reel caption]
     CAP --> GEM[Gemini place extraction]
-    CAP -. optional; currently disabled in production .-> VID[Gemini video fallback]
+    CAP -. optional, disabled in production .-> VID[Gemini video fallback]
     GEM --> MATCH[Google Places search and branch matching]
     VID --> MATCH
     MATCH --> CARDS[Photo cards with confidence labels]
